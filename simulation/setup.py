@@ -9,16 +9,19 @@ def find_theta_phi(s: Sensor, t: Target):
 
 class Simulation:
     def __init__(
-        self, boundary: np.array = np.array([[-10, 10], [-10, 10], [-10, 10]])
+        self,
+        boundary: np.array = np.array([[-10, 10], [-10, 10], [-10, 10]], interval=0.01),
     ):
         self.boundary = boundary
         self.sensors = []
         self.targets = []
         self.calculate_angles = None
+        self.interval = 0.01
 
     def add_sensors(self, sensor: Sensor):
         self.sensors.append(sensor)
 
+    @PendingDeprecationWarning
     def print_sensors(self):
         for idx, i in enumerate(self.sensors):
             print(f"{idx} : {i}")
@@ -30,6 +33,7 @@ class Simulation:
     def add_targets(self, target: Target):
         self.targets.append(target)
 
+    @PendingDeprecationWarning
     def print_targets(self):
         for idx, i in enumerate(self.targets):
             print(f"{idx} : {i}")
@@ -38,6 +42,7 @@ class Simulation:
         assert len(self.targets) > 0
         self.targets.remove(self.targets[index])
 
+    @PendingDeprecationWarning
     def __repr__(self):
         print("--- Sensors ---")
         self.print_sensors()
@@ -45,6 +50,7 @@ class Simulation:
         self.print_targets()
         return ""
 
+    @DeprecationWarning
     def find_bearings(self):
         assert len(self.sensors) > 0
         self.calculate_angles = np.zeros((len(self.sensors), len(self.targets), 2))

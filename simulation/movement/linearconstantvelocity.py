@@ -1,6 +1,5 @@
 import numpy as np
 from .basemovement import BaseMovement
-from ..objects import *
 
 
 class LinearConstantVelocity(BaseMovement):
@@ -23,10 +22,5 @@ class LinearConstantVelocity(BaseMovement):
 
         return v
 
-    def update_location(self, object: BaseObject, time: np.float32):
-        u = object.current_location()
-        v = u + self.direction * time
-        object.update_location(v)
-
     def additive_vector(self, time):
-        return self.direction * time
+        return self.direction * time * self.velocity
