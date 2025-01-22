@@ -15,13 +15,18 @@ class BaseObject:
     def current_location(self):
         return self.location
 
+    def update_interval(self, interval):
+        self.interval = interval
+
     def __repr__(self) -> np.array:
         return f"{self.current_location()}"
 
     def update_location(self, new_location: np.array):
         self.location = new_location
 
-    def update_sequential_movement(self, lst: list[(np.float32, BaseMovement)]):
+    def update_sequential_movement(
+        self, lst: list[(np.float32, BaseMovement)], auto_generate: bool = False
+    ):
         assert all(
             isinstance(i[0], (np.integer, np.float32, int, float))
             and isinstance(i[1], BaseMovement)
@@ -29,6 +34,12 @@ class BaseObject:
         ), "Each element in the lst should be in the format of (duration, BaseMovement)"
 
         self.sequential = lst
+
+        if auto_generate:
+            self.generate_timestamps()
+            self.return_timestamp_coordinates()
+
+        return None
 
     def generate_timestamps(self):
         total_duration = sum(map(lambda x: x[0], self.sequential))
@@ -49,7 +60,7 @@ class BaseObject:
 
             curr_idx += final_idx
 
-            self.location += movement.additive_vector(duration)
+            self.location = np.add(self.location, movement.additive_vector(duration))
 
         self.timestamp_coordinates[-1, :] = self.location
 
