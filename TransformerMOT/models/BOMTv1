@@ -1,0 +1,188 @@
+import torch
+from torch import nn
+from modules.position_encoder import LearnedPositionEncoder
+from modules.mlp import MLP
+from modules.transformer import (
+    TransformerEncoder,
+    TransformerDecoder,
+    PreProccessor,
+    TransformerEncoderLayer,
+    TransformerDecoderLayer,
+)
+from modules.contrastive_classifier import ContrastiveClassifier
+from util.misc import NestedTensor, Prediction
+import copy
+import math
+import numpy as np
+
+
+def _get_clones(module, N):
+    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
+
+
+class BOMT(nn.Module):
+    """
+    Bearing-Only Multi-Object Tracking Transformer (BOMT) is a model adapted from MT3v2
+    https://github.com/JulianoLagana/MT3v2
+
+    The BOMT model will assuming moving sensors & targets (plural) and the measurements are BEARING-ONLY.
+    Range and Doppler will be omitted.
+
+    This version will not include Refactoring. Refactoring will be done on version 2.
+
+    Features omitted:
+    - False detect
+    - Refactoring
+    - Normalisation of dataset. (It will be done directly on the dataset itself)
+    """
+
+    __version__ = 1.0
+
+    def __init__(
+        self,
+        d_detection=3,  # 5 for 3D and 3 for 2D
+        d_model=256,
+        n_timesteps=20,
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        encoder={
+            "n_heads": 4,
+            "n_layers": 3,
+            "dim_feedforward": 6,
+            "dropout": 0.01,
+        },
+        decoder={
+            "n_heads": 4,
+            "n_layers": 3,
+            "dim_feedforward": 6,
+            "dropout": 0.01,
+        },
+        num_queries=16,
+        d_prediction_hidden=3,  # FFN hidden_dim
+        n_prediction_layers=3,  # FFN num layers
+    ):
+        super().__init__()
+        # self.params = params
+
+        self.d_detection = d_detection
+        self.temporal_encoder = LearnedPositionEncoder(
+            n_timesteps=n_timesteps, d_model=d_model
+        )
+
+        # Normalization will not occur here.
+        # We will do preprocessing on the dataset to set the max dimensions of our simulation. Then this will be used for the normalisation.
+
+        self.measurement_normalization_factor = torch.tensor(
+            np.ones(d_detection), device=torch.device(device)
+        )  # This is just a placeholder with ones [Identity Matrix].
+
+        # Scaling factors will be considered in version 2
+
+        self.preprocesser = PreProccessor(
+            d_model=d_model,
+            d_detections=d_detection,
+            normalization_constant=self.measurement_normalization_factor,
+        )
+
+        # False detection will not be present for Version 1
+        encoder_layer = TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=encoder["n_heads"],
+            dim_feedforward=encoder["dim_feedforward"],
+            dropout=encoder["dropout"],
+            activation="relu",
+            normalize_before=True,  # We will normalise here to account for the lack of normalisation beforehand
+        )
+        self.encoder = TransformerEncoder(
+            encoder_layer=encoder_layer, num_layers=encoder["n_layers"], norm=None
+        )
+        decoder_layer = TransformerDecoderLayer(
+            d_model=d_model,
+            nhead=decoder["n_heads"],
+            dim_feedforward=decoder["dim_feedforward"],
+            dropout=decoder["dropout"],
+            activation="relu",
+            normalize_before=True,  # We will normalise here to account for the lack of normalisation beforehand
+        )
+        decoder_norm = nn.LayerNorm(normalized_shape=d_model)
+        self.decoder = TransformerDecoder(
+            decoder_layer=decoder_layer,
+            num_layers=decoder["n_layers"],
+            norm=decoder_norm,
+            with_state_refine=False,  # Idk what's this for now
+        )
+        self.query_embed = nn.Embedding(num_queries, d_model)
+
+        # Create pos/vel delta predictor and existence probability predictor
+        self.prediction_space_dimensions = (
+            d_detection // 2 + 1
+        )  # cartesian (x,y,z) position and velocity
+
+        self.pos_vel_predictor = MLP(
+            d_model,
+            hidden_dim=d_prediction_hidden,
+            output_dim=self.prediction_space_dimensions * 2,
+            num_layers=n_prediction_layers,
+        )
+        self.uncertainty_predictor = MLP(
+            d_model,
+            hidden_dim=d_prediction_hidden,
+            output_dim=self.prediction_space_dimensions * 2,
+            num_layers=n_prediction_layers,
+            softplus_at_end=True,
+        )
+        self.obj_classifier = nn.Linear(d_model, 1)
+
+        self.return_intermediate = True
+        # if self.params.loss.contrastive_classifier:
+        if True:
+            self.contrastive_classifier = ContrastiveClassifier(d_model)
+
+        # if self.params.loss.false_classifier:
+        #     self.false_classifier = MLP(
+        #         params.arch.d_model,
+        #         hidden_dim=params.arch.d_prediction_hidden,
+        #         output_dim=1,
+        #         num_layers=1,
+        #     )
+
+        self.two_stage = True
+        self.d_model = d_model
+
+        self._reset_parameters()
+
+        # Initialize delta predictions to zero
+        nn.init.constant_(self.pos_vel_predictor.layers[-1].weight.data, 0)
+        nn.init.constant_(self.pos_vel_predictor.layers[-1].bias.data, 0)
+
+        # Clone prediction heads for all layers of the decoder (+1 for encoder if two-stage)
+        num_pred = (
+            (self.decoder.num_layers + 1) if self.two_stage else self.decoder.num_layers
+        )
+        self.obj_classifier = _get_clones(self.obj_classifier, num_pred)
+        self.pos_vel_predictor = _get_clones(self.pos_vel_predictor, num_pred)
+        self.uncertainty_predictor = _get_clones(self.uncertainty_predictor, num_pred)
+        self.decoder.pos_vel_predictor = self.pos_vel_predictor
+        self.decoder.uncertainty_predictor = self.uncertainty_predictor
+        self.decoder.obj_classifier = self.obj_classifier
+
+        if self.two_stage:
+            # hack implementation for two-stage
+            self.enc_output = nn.Linear(d_model, d_model)
+            self.enc_output_norm = nn.LayerNorm(d_model)
+
+            self.pos_trans = nn.Linear(self.d_model, self.d_model * 2)
+            self.pos_trans_norm = nn.LayerNorm(self.d_model * 2)
+
+            self.num_queries = num_queries
+        else:
+            assert False, "self.two_stage should be = True for now"
+            # self.reference_points_linear = nn.Linear(
+            #     d_model, self.prediction_space_dimensions * 2
+            # )
+            # nn.init.xavier_uniform_(self.reference_points_linear.weight.data, gain=1.0)
+            # nn.init.constant_(self.reference_points_linear.bias.data, 0.0)
+
+    def _reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
