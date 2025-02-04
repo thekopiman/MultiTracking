@@ -306,6 +306,10 @@ class TransformerDecoder(nn.Module):
         self.num_layers = num_layers
         self.norm = norm
 
+        # To be added in BOMT
+        self.pos_vel_predictor = None
+        self.uncertainty_predictor = None
+
         # hack implementation for iterative bounding box refinement and two-stage Deformable DETR
         self.position_predictor = None
         self.obj_classifier = None

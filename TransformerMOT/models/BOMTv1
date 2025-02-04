@@ -170,6 +170,7 @@ class BOMT(nn.Module):
             self.enc_output = nn.Linear(d_model, d_model)
             self.enc_output_norm = nn.LayerNorm(d_model)
 
+            # *2 as one is for object query and another for query position encoding
             self.pos_trans = nn.Linear(self.d_model, self.d_model * 2)
             self.pos_trans_norm = nn.LayerNorm(self.d_model * 2)
 
@@ -186,3 +187,179 @@ class BOMT(nn.Module):
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
+
+    def gen_encoder_output_proposals(
+        self, embeddings, memory_padding_mask, normalized_measurements
+    ):
+        # Compute presigmoid version of normalized measurements
+        normalized_measurements_presigmoid = torch.log(
+            normalized_measurements / (1 - normalized_measurements)
+        )
+
+        # Set to inf invalid measurements (masked or outside the FOV)
+        output_proposals_valid = (
+            (normalized_measurements > 0.01) & (normalized_measurements < 0.99)
+        ).all(-1, keepdim=True)
+        normalized_measurements_presigmoid = (
+            normalized_measurements_presigmoid.masked_fill(
+                memory_padding_mask.unsqueeze(-1), float("inf")
+            )
+        )
+        normalized_measurements_presigmoid = (
+            normalized_measurements_presigmoid.masked_fill(
+                ~output_proposals_valid, float("inf")
+            )
+        )
+
+        # Mask embeddings of measurements that are actually just padding
+        masked_embeddings = embeddings
+        masked_embeddings = masked_embeddings.masked_fill(
+            memory_padding_mask.unsqueeze(-1), float(0)
+        )
+        masked_embeddings = masked_embeddings.masked_fill(
+            ~output_proposals_valid, float(0)
+        )
+
+        # Project embeddings
+        projected_embeddings = self.enc_output_norm(self.enc_output(masked_embeddings))
+        return projected_embeddings, normalized_measurements_presigmoid
+
+    def get_two_stage_proposals(self, measurement_batch, embeddings):
+        """
+        Given a batch of measurements and their corresponding embeddings (computed by the encoder), this generates the
+        object queries to be fed by the decoder, using the selection mechanism as explained in https://arxiv.org/abs/2104.00734
+
+        @param measurement_batch: Batch of measurements, including their masks.
+        @param embeddings: Embeddings computed by the encoder for each of the measurements.
+        @return:
+            object_queries: queries to be fed to the decoder.
+            query_positional_encodings: positional encodings to be added to the object queries.
+            reference_points: 2D position estimates to be used as starting points for iterative refinement in the
+                decoder.
+            enc_outputs_class: predicted existence probability for each measurement.
+            enc_outputs_state: predicted adjustment delta for each measurement (measurements are adjusted by summing
+                their corresponding deltas before using them as starting points for iterative refinement.
+            enc_outputs_coord_unact: adjusted measurements using their corresponding predicted deltas.
+        """
+        n_measurements, _, c = embeddings.shape
+        measurements = measurement_batch.tensors[:, :, : self.d_detections]
+
+        # Compute xy position of the measurements using range and azimuth
+        xs = measurements[:, :, 0] * (measurements[:, :, 2].cos())
+        ys = measurements[:, :, 0] * (measurements[:, :, 2].sin())
+        xy_measurements = torch.stack([xs, ys], 2)
+
+        # Normalize measurements to 0.25 - 0.75 (to avoid extreme regions of the sigmoid)
+        normalized_xy_meas = xy_measurements / self.fov_rescaling_factor + 0.5
+
+        # Compute projected encoder memory + presigmoid normalized measurements (filtered using the masks)
+        result = self.gen_encoder_output_proposals(
+            embeddings.permute(1, 0, 2), measurement_batch.mask, normalized_xy_meas
+        )
+        projected_embeddings, normalized_meas_presigmoid = result
+
+        # Compute scores and adjustments
+        scores = self.decoder.obj_classifier[self.decoder.num_layers](
+            projected_embeddings
+        )
+        scores = scores.masked_fill(
+            measurement_batch.mask.unsqueeze(-1), -100_000_000
+        )  # Set masked predictions to "0" probability
+
+        # delta
+        adjustments = self.pos_vel_predictor[self.decoder.num_layers](
+            projected_embeddings
+        )
+
+        # Concatenate initial velocity estimates to the measurements
+        init_vel_estimates_presigmoid = torch.zeros_like(normalized_meas_presigmoid)
+        normalized_meas_presigmoid = torch.cat(
+            (
+                normalized_meas_presigmoid,
+                init_vel_estimates_presigmoid,
+            ),
+            dim=2,
+        )
+
+        # Adjust measurements
+        adjusted_normalized_meas_presigmoid = normalized_meas_presigmoid + adjustments
+        adjusted_normalized_meas = adjusted_normalized_meas_presigmoid.sigmoid()
+
+        # Select top-k scoring measurements and their corresponding embeddings
+        topk_scores_indices = torch.topk(scores[..., 0], self.num_queries, dim=1)[1]
+        repeated_indices = topk_scores_indices.unsqueeze(-1).repeat(
+            (1, 1, adjusted_normalized_meas_presigmoid.shape[2])
+        )
+        topk_adjusted_normalized_meas_presigmoid = torch.gather(
+            adjusted_normalized_meas_presigmoid, 1, repeated_indices
+        ).detach()
+        topk_adjusted_normalized_meas = (
+            topk_adjusted_normalized_meas_presigmoid.sigmoid().permute(1, 0, 2)
+        )
+        # i 1-k
+        topk_memory = torch.gather(
+            projected_embeddings.detach(),
+            1,
+            topk_scores_indices.unsqueeze(-1).repeat(1, 1, self.params.arch.d_model),
+        )
+
+        # Compute object queries and their positional encodings by feeding the top-k memory through FFN+LayerNorm
+        pos_trans_out = self.pos_trans_norm(self.pos_trans(topk_memory))
+        query_positional_encodings, object_queries = torch.split(
+            pos_trans_out, c, dim=2
+        )
+        query_positional_encodings = query_positional_encodings.permute(1, 0, 2)
+        object_queries = object_queries.permute(1, 0, 2)
+
+        return (
+            object_queries,
+            query_positional_encodings,
+            topk_adjusted_normalized_meas,
+            scores,
+            adjustments,
+            adjusted_normalized_meas,
+        )
+
+    def forward(
+        self, measurements: NestedTensor
+    ):  # NestedTensor consist of Tensor and mask
+        mapped_time_idx = torch.round(
+            measurements.tensors[:, :, -1] / self.params.data_generation.dt
+        )
+        time_encoding = self.temporal_encoder(mapped_time_idx.long())
+        preprocessed_measurements = self.preprocessor(
+            measurements.tensors[:, :, : self.d_detections]
+        )
+        mask = measurements.mask
+
+        batch_size, num_batch_max_meas, d_detections = preprocessed_measurements.shape
+        preprocessed_measurements = preprocessed_measurements.permute(1, 0, 2)
+        time_encoding = time_encoding.permute(1, 0, 2)
+
+        # Feed measurements through encoder
+        embeddings = self.encoder(
+            preprocessed_measurements, src_key_padding_mask=mask, pos=time_encoding
+        )
+
+        aux_classifications = {}
+        # if self.params.loss.contrastive_classifier:
+        if True:
+            contrastive_classifications = self.contrastive_classifier(
+                embeddings.permute(1, 0, 2), padding_mask=mask
+            )
+            aux_classifications["contrastive_classifications"] = (
+                contrastive_classifications
+            )
+
+        # False classifications omitted
+
+        # if self.two_stage:
+        if True:
+            (
+                object_queries,
+                query_positional_encodings,
+                topk_adjusted_normalized_meas,
+                scores,
+                adjustments,
+                adjusted_normalized_meas,
+            ) = self.get_two_stage_proposals(measurements, embeddings)
