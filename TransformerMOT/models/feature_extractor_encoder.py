@@ -14,10 +14,9 @@ class RangeParameterizationLayer(nn.Module):
         nn.init.xavier_uniform_(self.d_embeddings.weight)
 
     def forward(self, x):
-        # x: (B, cartesian_dim, t)
         B, C, T = x.shape
 
-        assert C == 5 or C == 3  # 2D or 3D only
+        assert C == 5 or C == 3  # 2D or 3D only including angles
 
         embed = self.d_embeddings.weight
         embed = embed.view(1, 1, self.num_d, 1)
@@ -29,9 +28,9 @@ class RangeParameterizationLayer(nn.Module):
             azimuth = x[:, 3, :]
             elevation = x[:, 4, :]
 
-            x_polar = torch.cos(elevation) * torch.cos(azimuth)
-            y_polar = torch.cos(elevation) * torch.sin(azimuth)
-            z_polar = torch.sin(elevation)
+            x_polar = torch.sin(elevation) * torch.cos(azimuth)
+            y_polar = torch.sin(elevation) * torch.sin(azimuth)
+            z_polar = torch.cos(elevation)
 
             polar_cartesian = torch.stack([x_polar, y_polar, z_polar], dim=1)
 
@@ -45,6 +44,8 @@ class RangeParameterizationLayer(nn.Module):
             output = SensorCoordinates + transformed_polar
 
             return output
+
+        # 2D
         elif C == 3:
             SensorCoordinates = x[:, :2, :]  # (B, 2, T)
 

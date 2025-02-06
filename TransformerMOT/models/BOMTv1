@@ -73,9 +73,12 @@ class BOMT(nn.Module):
 
         self.measurement_normalization_factor = torch.tensor(
             np.ones(d_detection), device=torch.device(device)
-        )  # This is just a placeholder with ones [Identity Matrix].
-
+        )  # This is just a placeholder with ones.
         # Scaling factors will be considered in version 2
+
+        ##### TO-DO ##################################
+        # Include Feature Extractor Encoder here!    #
+        ##############################################
 
         self.preprocesser = PreProccessor(
             d_model=d_model,
