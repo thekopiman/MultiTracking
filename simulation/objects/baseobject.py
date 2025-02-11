@@ -4,13 +4,23 @@ from ..movement.basemovement import BaseMovement
 
 
 class BaseObject:
-    def __init__(self, initial_location: np.array = np.zeros((3)), interval=0.01):
+    def __init__(
+        self,
+        initial_location: np.array = np.zeros((3)),
+        interval=0.01,
+        id=None,
+        checkpoints=[],
+    ):
         self.location = initial_location
 
         # [(duration, movement)...]
         self.sequential = []
         self.interval = interval
         self.timestamp_coordinates = None
+        self.timestamp_velocities = None
+        self.id = id
+        self.current_velocity = np.zeros((3))
+        self.checkpoints = checkpoints
 
     def current_location(self):
         return self.location
@@ -22,6 +32,7 @@ class BaseObject:
         return f"{self.current_location()}"
 
     def update_location(self, new_location: np.array):
+        self.current_velocity = (new_location - self.location) / self.interval
         self.location = new_location
 
     def update_sequential_movement(
@@ -37,15 +48,18 @@ class BaseObject:
 
         if auto_generate:
             self.generate_timestamps()
-            self.return_timestamp_coordinates()
+            self.generate_velocities()
+            return self.timestamp_coordinates, self.timestamp_velocities
 
         return None
 
     def generate_timestamps(self):
+        if not self.sequential:
+            self.timestamp_coordinates = np.expand_dims(self.location, axis=0)
+            return
+
         total_duration = sum(map(lambda x: x[0], self.sequential))
-        self.timestamp_coordinates = np.zeros(
-            (int(total_duration / self.interval) + 1, 3)
-        )
+        self.timestamp_coordinates = np.zeros((int(total_duration / self.interval), 3))
 
         curr_idx = 0
         for duration, movement in self.sequential:
@@ -58,7 +72,7 @@ class BaseObject:
 
             self.timestamp_coordinates[curr_idx:final_idx, :] = result
 
-            curr_idx += final_idx
+            curr_idx = final_idx
 
             self.location = np.add(self.location, movement.additive_vector(duration))
 
@@ -67,6 +81,16 @@ class BaseObject:
     def return_timestamp_coordinates(self):
         # assert not isinstance(self.timestamp_coordinates, (None))
         return self.timestamp_coordinates
+
+    def generate_velocities(self):
+        self.timestamp_velocities = np.zeros_like(self.timestamp_coordinates)
+        self.timestamp_velocities[1:, :] = (
+            self.timestamp_coordinates[1:, :] - self.timestamp_coordinates[:-1, :]
+        ) / self.interval
+
+    def return_timestamp_velocities(self):
+        # assert not isinstance(self.timestamp_coordinates, (None))
+        return self.timestamp_velocities
 
 
 if __name__ == "__main__":
