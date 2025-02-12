@@ -6,25 +6,18 @@ import random
 from ..movement.linearconstantvelocity import LinearConstantVelocity
 
 
-def find_theta(s: np.array, t: np.array):
+def find_azimuth(s: np.array, t: np.array):
     dx, dy = s - t
-    np.arctan2(dy, dx),
+    return np.arctan2(dy, dx)
 
 
-def find_theta_phi(s: np.array, t: np.array):
+def find_azimuth_elevation(s: np.array, t: np.array):
     dx, dy, dz = s - t
     return np.arctan2(dy, dx), np.arctan(dz / np.sqrt(dx**2 + dy**2))
 
 
-def gaussian_noise(noise: float, theta_phi: tuple[float, float]):
-    theta = theta_phi[0]
-    phi = theta_phi[1]
-
-    # Add Gaussian noise
-    theta_noisy = theta + np.random.normal(0, noise)
-    phi_noisy = phi + np.random.normal(0, noise)
-
-    return theta_noisy, phi_noisy
+def gaussian_noise(noise: float, angle: np.ndarray):
+    return angle + np.random.normal(0, noise, size=angle.shape)
 
 
 class MOTSimulationV1:
@@ -274,10 +267,18 @@ class MOTSimulationV1:
                 i.return_timestamp_coordinates().shape[0], self.max_length
             )
 
-        self.sensors_timestamps = np.zeros((len(self.sensors), self.max_length, 3 if self.ThreeD else 2))
-        self.targets_timestamps = np.zeros((len(self.targets), self.max_length, 3 if self.ThreeD else 2))
-        self.sensors_velocities = np.zeros((len(self.sensors), self.max_length, 3 if self.ThreeD else 2))
-        self.targets_velocities = np.zeros((len(self.targets), self.max_length, 3 if self.ThreeD else 2))
+        self.sensors_timestamps = np.zeros(
+            (len(self.sensors), self.max_length, 3 if self.ThreeD else 2)
+        )
+        self.targets_timestamps = np.zeros(
+            (len(self.targets), self.max_length, 3 if self.ThreeD else 2)
+        )
+        self.sensors_velocities = np.zeros(
+            (len(self.sensors), self.max_length, 3 if self.ThreeD else 2)
+        )
+        self.targets_velocities = np.zeros(
+            (len(self.targets), self.max_length, 3 if self.ThreeD else 2)
+        )
 
         for idx, i in enumerate(self.sensors):
             # Copy the first few [,:,]
@@ -315,17 +316,36 @@ class MOTSimulationV1:
         assert self.max_length > 0
 
         self.angles = np.zeros(
-            (len(self.sensors), len(self.targets), self.max_length, 2)
+            (
+                len(self.sensors),
+                len(self.targets),
+                self.max_length,
+                2 if self.ThreeD else 1,
+            )
         )
 
         # Calculate the angles
         for i, sensor_positions in enumerate(self.sensors_timestamps):
             for j, target_positions in enumerate(self.targets_timestamps):
                 for k in range(self.max_length):  # Iterate over timestamps
-                    self.angles[i, j, k] = gaussian_noise(
-                        self.sensors[i].error,
-                        find_theta_phi(sensor_positions[k], target_positions[k]),
-                    )
+
+                    if self.ThreeD:
+                        angle = find_azimuth_elevation(
+                            sensor_positions[k], target_positions[k]
+                        )
+
+                    else:
+                        angle = find_azimuth(sensor_positions[k], target_positions[k])
+
+                    try:
+                        self.angles[i, j, k] = gaussian_noise(
+                            np.radians(self.sensors[i].error), angle
+                        )
+                    except AttributeError:
+                        print(find_azimuth(sensor_positions[k], target_positions[k]))
+                        raise Exception(
+                            "Debug: ", angle, sensor_positions[k], target_positions[k]
+                        )
 
         return self.angles
 

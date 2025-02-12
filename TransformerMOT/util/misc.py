@@ -6,7 +6,7 @@ import sys
 import torch
 from torch import Tensor
 
-from util.load_config_files import load_yaml_into_dotdict, dotdict
+from TransformerMOT.util.load_config_files import load_yaml_into_dotdict, dotdict
 
 
 class NestedTensor(object):
@@ -54,11 +54,10 @@ def nested_tensor_from_tensor_list(tensor_list: List[Tensor]):
         tensor = torch.zeros(batch_shape, dtype=dtype, device=device)
         mask = torch.ones((b, h, w), dtype=torch.bool, device=device)
         for meas, pad_meas, m in zip(tensor_list, tensor, mask):
-            pad_meas[: meas.shape[0], : meas.shape[1],
-                     : meas.shape[2]].copy_(meas)
-            m[: meas.shape[1], :meas.shape[2]] = False
+            pad_meas[: meas.shape[0], : meas.shape[1], : meas.shape[2]].copy_(meas)
+            m[: meas.shape[1], : meas.shape[2]] = False
     else:
-        raise ValueError('not supported')
+        raise ValueError("not supported")
     return NestedTensor(tensor, mask)
 
 
@@ -66,11 +65,15 @@ def save_checkpoint(folder, filename, model, optimizer, scheduler):
     print(f"[INFO] Saving checkpoint in {folder}/{filename}")
     if not os.path.isdir(folder):
         os.makedirs(folder)
-    torch.save({
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict()
-                }, os.path.join(folder, filename))
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+        },
+        os.path.join(folder, filename),
+    )
+
 
 def update_logs(logs, key, value):
     if not key in logs:
@@ -78,6 +81,7 @@ def update_logs(logs, key, value):
     else:
         logs[key].append(value)
     return logs
+
 
 def factor_int(n):
     """
@@ -88,11 +92,11 @@ def factor_int(n):
     solution = False
     val = nsqrt
     while not solution:
-        val2 = int(n/val)
+        val2 = int(n / val)
         if val2 * val == float(n):
             solution = True
         else:
-            val-=1
+            val -= 1
     return val, val2
 
 
@@ -100,7 +104,7 @@ def inverse_sigmoid(x, eps=1e-5):
     x = x.clamp(min=0, max=1)
     x1 = x.clamp(min=eps)
     x2 = (1 - x).clamp(min=eps)
-    return torch.log(x1/x2)
+    return torch.log(x1 / x2)
 
 
 @torch.no_grad()
@@ -112,15 +116,15 @@ def split_batch(batch, unique_ids, params):
     second_batch = []
     second_ids = []
 
-    mapped_time_idx = batch[:,:,-1] / params.data_generation.dt
-    
+    mapped_time_idx = batch[:, :, -1] / params.data_generation.dt
+
     for i in range(bs):
         # Take out all measurements that are in the first batch that are not padded
         first_batch_idx = mapped_time_idx[i] < params.data_generation.n_timesteps
-        first_batch_idx = torch.logical_and(first_batch_idx, unique_ids[i]!=-2)
+        first_batch_idx = torch.logical_and(first_batch_idx, unique_ids[i] != -2)
 
         second_batch_idx = 1 <= mapped_time_idx[i]
-        second_batch_idx = torch.logical_and(second_batch_idx, unique_ids[i]!=-2)
+        second_batch_idx = torch.logical_and(second_batch_idx, unique_ids[i] != -2)
 
         first_batch.append(batch[i][first_batch_idx])
         first_ids.append(unique_ids[i][first_batch_idx])
@@ -129,12 +133,11 @@ def split_batch(batch, unique_ids, params):
         second_ids.append(unique_ids[i][second_batch_idx])
 
         # Shift timestep
-        second_batch[i][:,-1] = second_batch[i][:,-1] - params.data_generation.dt
-    
-    
+        second_batch[i][:, -1] = second_batch[i][:, -1] - params.data_generation.dt
+
     first, first_ids = pad_and_nest(first_batch, first_ids)
     second, second_ids = pad_and_nest(second_batch, second_ids)
-                   
+
     return first, second, first_ids, second_ids
 
 
@@ -154,24 +157,24 @@ def pad_to_batch_max(batch, unique_ids, max_len):
     mask = torch.ones((batch_size, max_len), device=dev)
     ids = -2 * torch.ones((batch_size, max_len), device=dev)
     for i, ex in enumerate(batch):
-        training_data_padded[i,:len(ex),:] = ex
-        mask[i,:len(ex)] = 0
-        ids[i,:len(ex)] = unique_ids[i]
+        training_data_padded[i, : len(ex), :] = ex
+        mask[i, : len(ex)] = 0
+        ids[i, : len(ex)] = unique_ids[i]
 
     return training_data_padded, mask, ids
 
 
-def extract_batch(batch,unique_ids, lower_time_idx, upper_time_idx, dt,  batch_id=0):
+def extract_batch(batch, unique_ids, lower_time_idx, upper_time_idx, dt, batch_id=0):
     bt = batch.tensors.clone().detach()
     bm = batch.mask.clone().detach()
     u = unique_ids.clone().detach()
-    b = NestedTensor(bt,bm)
-    times = torch.round(b.tensors[batch_id,:,-1] / dt)
+    b = NestedTensor(bt, bm)
+    times = torch.round(b.tensors[batch_id, :, -1] / dt)
     idx = torch.logical_and(lower_time_idx <= times, times < upper_time_idx)
     b.tensors = b.tensors[batch_id, idx].unsqueeze(0)
-    b.tensors[:,:,-1] = b.tensors[:,:,-1] - lower_time_idx*dt
+    b.tensors[:, :, -1] = b.tensors[:, :, -1] - lower_time_idx * dt
     b.mask = batch.mask[batch_id, idx].unsqueeze(0)
-    u = u[:,idx]
+    u = u[:, idx]
 
     return b, u
 
@@ -181,7 +184,7 @@ def recursive_loss_sum(loss_dict):
     if type(loss_dict) is not dict:
         return loss_dict
     else:
-        for k,v in loss_dict.items():
+        for k, v in loss_dict.items():
             loss += recursive_loss_sum(v)
     return loss
 
@@ -193,7 +196,14 @@ def compute_median_absolute_deviation(x):
 
 
 class Prediction:
-    def __init__(self, positions=None, velocities=None, shapes=None, logits=None, uncertainties=None):
+    def __init__(
+        self,
+        positions=None,
+        velocities=None,
+        shapes=None,
+        logits=None,
+        uncertainties=None,
+    ):
         if positions is not None:
             self.positions = positions
         if velocities is not None:
@@ -214,8 +224,10 @@ class Prediction:
         elif self.positions is not None and self.velocities is None:
             return self.positions
         else:
-            raise NotImplementedError(f'`states` attribute not implemented for positions {self.positions} and '
-                                      f'velocities {self.velocities}.')
+            raise NotImplementedError(
+                f"`states` attribute not implemented for positions {self.positions} and "
+                f"velocities {self.velocities}."
+            )
 
 
 class AnnotatedValue:
@@ -249,6 +261,3 @@ class AnnotatedValueSum:
     def extend(self, other):
         self.values.extend(other.values)
         self.annotations.extend(other.annotations)
-
-
-

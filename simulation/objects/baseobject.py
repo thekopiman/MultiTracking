@@ -69,14 +69,16 @@ class BaseObject:
             result = np.array(
                 [self.location + movement.additive_vector(t) for t in timestamps]
             )
+            if result.size > 0:
+                final_idx = curr_idx + int(duration / self.interval)
 
-            final_idx = curr_idx + int(duration / self.interval)
+                self.timestamp_coordinates[curr_idx:final_idx, :] = result
 
-            self.timestamp_coordinates[curr_idx:final_idx, :] = result
+                self.location = np.add(
+                    self.location, movement.additive_vector(duration)
+                )
 
-            curr_idx = final_idx
-
-            self.location = np.add(self.location, movement.additive_vector(duration))
+                curr_idx = final_idx
 
         self.timestamp_coordinates[-1, :] = self.location
 
