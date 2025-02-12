@@ -19,7 +19,7 @@ class BaseObject:
         self.timestamp_coordinates = None
         self.timestamp_velocities = None
         self.id = id
-        self.current_velocity = np.zeros((3))
+        self.current_velocity = np.zeros_like(initial_location)
         self.checkpoints = checkpoints
 
     def current_location(self):
@@ -59,7 +59,9 @@ class BaseObject:
             return
 
         total_duration = sum(map(lambda x: x[0], self.sequential))
-        self.timestamp_coordinates = np.zeros((int(total_duration / self.interval), 3))
+        self.timestamp_coordinates = np.zeros(
+            (int(total_duration / self.interval), self.location.shape[0])
+        )
 
         curr_idx = 0
         for duration, movement in self.sequential:

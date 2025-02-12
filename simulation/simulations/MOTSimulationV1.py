@@ -34,7 +34,14 @@ class MOTSimulationV1:
         dimension=np.array([[0, 100], [0, 100], [0, 100]]),
         sensor_radius=np.array([[-5, 5], [-5, 5], [-5, 5]]),
         target_radius=np.array([[-5, 5], [-5, 5], [-5, 5]]),
+        ThreeD=True,
     ):
+        assert dimension.shape[0] == (3 if ThreeD else 2)
+        assert sensor_radius.shape[0] == (3 if ThreeD else 2)
+        assert target_radius.shape[0] == (3 if ThreeD else 2)
+
+        self.ThreeD = ThreeD
+
         self.dimension = dimension
         self.sensor_radius = sensor_radius
         self.target_radius = target_radius
@@ -42,6 +49,14 @@ class MOTSimulationV1:
         self.sensors_checkpoints = []
         self.targets_checkpoints = []
         self.interval = interval
+
+        self.sensors = []
+        self.targets = []
+
+    def reset(self):
+        self.sensors_checkpoints = []
+        self.targets_checkpoints = []
+        self.unique_id_count = itertools.count()
 
         self.sensors = []
         self.targets = []
@@ -59,14 +74,27 @@ class MOTSimulationV1:
         for i in range(no_sensors_checkpoints):
             x = np.random.uniform(low=self.dimension[0, 0], high=self.dimension[0, 1])
             y = np.random.uniform(low=self.dimension[1, 0], high=self.dimension[1, 1])
-            z = np.random.uniform(low=self.dimension[2, 0], high=self.dimension[2, 1])
-            self.sensors_checkpoints.append(np.array((x, y, z)))
+
+            if self.ThreeD:
+                z = np.random.uniform(
+                    low=self.dimension[2, 0], high=self.dimension[2, 1]
+                )
+                self.sensors_checkpoints.append(np.array((x, y, z)))
+            else:
+                self.sensors_checkpoints.append(np.array((x, y)))
+
         # Targets
         for i in range(no_targets_checkpoints):
             x = np.random.uniform(low=self.dimension[0, 0], high=self.dimension[0, 1])
             y = np.random.uniform(low=self.dimension[1, 0], high=self.dimension[1, 1])
-            z = np.random.uniform(low=self.dimension[2, 0], high=self.dimension[2, 1])
-            self.targets_checkpoints.append(np.array((x, y, z)))
+
+            if self.ThreeD:
+                z = np.random.uniform(
+                    low=self.dimension[2, 0], high=self.dimension[2, 1]
+                )
+                self.targets_checkpoints.append(np.array((x, y, z)))
+            else:
+                self.targets_checkpoints.append(np.array((x, y)))
 
     def spawn_sensors(
         self,
@@ -87,19 +115,36 @@ class MOTSimulationV1:
             checkpoints = random.sample(self.sensors_checkpoints, no_of_checkpoints)
 
             for checkpoint in checkpoints:
-                checkpoint += np.array(
-                    [
-                        np.random.uniform(
-                            low=self.sensor_radius[0, 0], high=self.sensor_radius[0, 1]
-                        ),
-                        np.random.uniform(
-                            low=self.sensor_radius[1, 0], high=self.sensor_radius[1, 1]
-                        ),
-                        np.random.uniform(
-                            low=self.sensor_radius[2, 0], high=self.sensor_radius[2, 1]
-                        ),
-                    ]
-                )
+                if self.ThreeD:
+                    checkpoint += np.array(
+                        [
+                            np.random.uniform(
+                                low=self.sensor_radius[0, 0],
+                                high=self.sensor_radius[0, 1],
+                            ),
+                            np.random.uniform(
+                                low=self.sensor_radius[1, 0],
+                                high=self.sensor_radius[1, 1],
+                            ),
+                            np.random.uniform(
+                                low=self.sensor_radius[2, 0],
+                                high=self.sensor_radius[2, 1],
+                            ),
+                        ]
+                    )
+                else:
+                    checkpoint += np.array(
+                        [
+                            np.random.uniform(
+                                low=self.sensor_radius[0, 0],
+                                high=self.sensor_radius[0, 1],
+                            ),
+                            np.random.uniform(
+                                low=self.sensor_radius[1, 0],
+                                high=self.sensor_radius[1, 1],
+                            ),
+                        ]
+                    )
 
             self.sensors.append(
                 Sensor(
@@ -128,19 +173,37 @@ class MOTSimulationV1:
             checkpoints = random.sample(self.targets_checkpoints, no_of_checkpoints)
 
             for checkpoint in checkpoints:
-                checkpoint += np.array(
-                    [
-                        np.random.uniform(
-                            low=self.target_radius[0, 0], high=self.target_radius[0, 1]
-                        ),
-                        np.random.uniform(
-                            low=self.target_radius[1, 0], high=self.target_radius[1, 1]
-                        ),
-                        np.random.uniform(
-                            low=self.target_radius[2, 0], high=self.target_radius[2, 1]
-                        ),
-                    ]
-                )
+                if self.ThreeD:
+                    checkpoint += np.array(
+                        [
+                            np.random.uniform(
+                                low=self.target_radius[0, 0],
+                                high=self.target_radius[0, 1],
+                            ),
+                            np.random.uniform(
+                                low=self.target_radius[1, 0],
+                                high=self.target_radius[1, 1],
+                            ),
+                            np.random.uniform(
+                                low=self.target_radius[2, 0],
+                                high=self.target_radius[2, 1],
+                            ),
+                        ]
+                    )
+                else:
+                    checkpoint += np.array(
+                        [
+                            np.random.uniform(
+                                low=self.target_radius[0, 0],
+                                high=self.target_radius[0, 1],
+                            ),
+                            np.random.uniform(
+                                low=self.target_radius[1, 0],
+                                high=self.target_radius[1, 1],
+                            ),
+                        ]
+                    )
+
             self.targets.append(
                 Target(
                     id=next(self.unique_id_count),
@@ -183,7 +246,7 @@ class MOTSimulationV1:
                 velocity = max(1, speed_dist())  # Minimally 1m/s
 
                 if distance == 0:
-                    direction = np.array([0, 0, 0])  # No movement
+                    direction = np.zeros_like(start)  # No movement
                     duration = 0
                 else:
                     direction = displacement / distance  # Unit vector
@@ -211,10 +274,10 @@ class MOTSimulationV1:
                 i.return_timestamp_coordinates().shape[0], self.max_length
             )
 
-        self.sensors_timestamps = np.zeros((len(self.sensors), self.max_length, 3))
-        self.targets_timestamps = np.zeros((len(self.targets), self.max_length, 3))
-        self.sensors_velocities = np.zeros((len(self.sensors), self.max_length, 3))
-        self.targets_velocities = np.zeros((len(self.targets), self.max_length, 3))
+        self.sensors_timestamps = np.zeros((len(self.sensors), self.max_length, 3 if self.ThreeD else 2))
+        self.targets_timestamps = np.zeros((len(self.targets), self.max_length, 3 if self.ThreeD else 2))
+        self.sensors_velocities = np.zeros((len(self.sensors), self.max_length, 3 if self.ThreeD else 2))
+        self.targets_velocities = np.zeros((len(self.targets), self.max_length, 3 if self.ThreeD else 2))
 
         for idx, i in enumerate(self.sensors):
             # Copy the first few [,:,]
