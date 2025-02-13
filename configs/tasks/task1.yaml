@@ -1,0 +1,22 @@
+data_generation:
+  seed: 0
+  truncation: 20
+  simulation_generator: "MOTSimulationV1"
+  interval: 0.1
+  p: 0.5
+  dimension: [[0, 100], [0, 100]]
+  sensor_radius: [[-5, 5], [-5, 5]]
+  target_radius: [[-5, 5], [-5, 5]]
+  ThreeD: False
+  checkpoints:
+    targets: 8
+    sensors: 8
+  no_of_objects:
+    sensors_lambda: 3
+    min_sensors: 3
+    sensor_error: 5
+    targets_lambda: 3
+    min_targets: 3
+  speed:
+    sensors: [20, 5]
+    targets: [20, 5]

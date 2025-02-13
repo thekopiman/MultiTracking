@@ -1,19 +1,24 @@
 import torch
 from torch import nn
-from modules.position_encoder import LearnedPositionEncoder
-from modules.mlp import MLP
-from modules.transformer import (
+from TransformerMOT.modules.position_encoder import LearnedPositionEncoder
+from TransformerMOT.modules.mlp import MLP
+from TransformerMOT.modules.transformer import (
     TransformerEncoder,
     TransformerDecoder,
     PreProccessor,
     TransformerEncoderLayer,
     TransformerDecoderLayer,
 )
-from modules.contrastive_classifier import ContrastiveClassifier
-from util.misc import NestedTensor, Prediction
+from TransformerMOT.modules.contrastive_classifier import ContrastiveClassifier
+from TransformerMOT.util.misc import NestedTensor, Prediction
 import copy
 import math
 import numpy as np
+
+from TransformerMOT.models.feature_extractor_encoder import (
+    RangeParameterizationLayer,
+    FeatureExtractorEncoder,
+)
 
 
 def _get_clones(module, N):
@@ -40,105 +45,103 @@ class BOMT(nn.Module):
 
     def __init__(
         self,
-        d_detection=3,  # 5 for 3D and 3 for 2D
-        d_model=256,
-        n_timesteps=20,
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        encoder={
-            "n_heads": 4,
-            "n_layers": 3,
-            "dim_feedforward": 6,
-            "dropout": 0.01,
-        },
-        decoder={
-            "n_heads": 4,
-            "n_layers": 3,
-            "dim_feedforward": 6,
-            "dropout": 0.01,
-        },
-        num_queries=16,
-        d_prediction_hidden=3,  # FFN hidden_dim
-        n_prediction_layers=3,  # FFN num layers
+        params,
     ):
         super().__init__()
-        # self.params = params
+        self.params = params
 
-        self.d_detection = d_detection
+        if self.params.training.device == "auto":
+            self.params.training.device = "cuda" if torch.cuda.is_available() else "cpu"
+
         self.temporal_encoder = LearnedPositionEncoder(
-            n_timesteps=n_timesteps, d_model=d_model
+            n_timesteps=self.params.data_generation.truncation,
+            d_model=self.params.arch.d_model,
         )
+
+        # d_detections is either dim(x,y,azimuth) or dim(x,y,z,azimuth,elevation)
+        self.prediction_space_dimensions = (
+            self.params.arch.d_detections // 2 + 1
+        )  # cartesian (x,y,z) position and velocity
 
         # Normalization will not occur here.
         # We will do preprocessing on the dataset to set the max dimensions of our simulation. Then this will be used for the normalisation.
 
         self.measurement_normalization_factor = torch.tensor(
-            np.ones(d_detection), device=torch.device(device)
+            np.ones(self.prediction_space_dimensions),
+            device=torch.device(self.params.training.device),
         )  # This is just a placeholder with ones.
         # Scaling factors will be considered in version 2
 
-        ##### TO-DO ##################################
-        # Include Feature Extractor Encoder here!    #
-        ##############################################
+        self.rf_layer = RangeParameterizationLayer(self.params.arch.rp_encoder.d_num)
+        self.feature_extraction_encoder = FeatureExtractorEncoder(
+            d_input=self.params.arch.rp_encoder.d_num,
+            d_model=self.params.arch.d_model,
+            num_heads=self.params.arch.rp_encoder.n_heads,
+            num_layers=self.params.arch.rp_encoder.n_layers,
+            dim_feedforward=self.params.arch.rp_encoder.dim_feedforward,
+        )
 
         self.preprocesser = PreProccessor(
-            d_model=d_model,
-            d_detections=d_detection,
+            d_model=self.params.arch.d_model,
+            d_detections=self.prediction_space_dimensions,
             normalization_constant=self.measurement_normalization_factor,
         )
 
         # False detection will not be present for Version 1
         encoder_layer = TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=encoder["n_heads"],
-            dim_feedforward=encoder["dim_feedforward"],
-            dropout=encoder["dropout"],
+            d_model=self.params.arch.d_model,
+            nhead=self.params.arch.encoder.n_heads,
+            dim_feedforward=self.params.arch.encoder.dim_feedforward,
+            dropout=self.params.arch.encoder.dropout,
             activation="relu",
             normalize_before=True,  # We will normalise here to account for the lack of normalisation beforehand
         )
         self.encoder = TransformerEncoder(
-            encoder_layer=encoder_layer, num_layers=encoder["n_layers"], norm=None
+            encoder_layer=encoder_layer,
+            num_layers=self.params.arch.encoder.n_layers,
+            norm=None,
         )
         decoder_layer = TransformerDecoderLayer(
-            d_model=d_model,
-            nhead=decoder["n_heads"],
-            dim_feedforward=decoder["dim_feedforward"],
-            dropout=decoder["dropout"],
+            d_model=self.params.arch.d_model,
+            nhead=self.params.arch.decoder.n_heads,
+            dim_feedforward=self.params.arch.decoder.dim_feedforward,
+            dropout=self.params.arch.decoder.dropout,
             activation="relu",
             normalize_before=True,  # We will normalise here to account for the lack of normalisation beforehand
         )
-        decoder_norm = nn.LayerNorm(normalized_shape=d_model)
+        decoder_norm = nn.LayerNorm(normalized_shape=self.params.arch.d_model)
         self.decoder = TransformerDecoder(
             decoder_layer=decoder_layer,
-            num_layers=decoder["n_layers"],
+            num_layers=self.params.arch.decoder.n_layers,
             norm=decoder_norm,
             with_state_refine=False,  # Idk what's this for now
         )
-        self.query_embed = nn.Embedding(num_queries, d_model)
+        self.query_embed = nn.Embedding(
+            self.params.arch.num_queries, self.params.arch.d_model
+        )
 
         # Create pos/vel delta predictor and existence probability predictor
-        self.prediction_space_dimensions = (
-            d_detection // 2 + 1
-        )  # cartesian (x,y,z) position and velocity
-
         self.pos_vel_predictor = MLP(
-            d_model,
-            hidden_dim=d_prediction_hidden,
+            self.params.arch.d_model,
+            hidden_dim=self.params.arch.d_prediction_hidden,
             output_dim=self.prediction_space_dimensions * 2,
-            num_layers=n_prediction_layers,
+            num_layers=self.params.arch.n_prediction_layers,
         )
         self.uncertainty_predictor = MLP(
-            d_model,
-            hidden_dim=d_prediction_hidden,
+            self.params.arch.d_model,
+            hidden_dim=self.params.arch.d_prediction_hidden,
             output_dim=self.prediction_space_dimensions * 2,
-            num_layers=n_prediction_layers,
+            num_layers=self.params.arch.n_prediction_layers,
             softplus_at_end=True,
         )
-        self.obj_classifier = nn.Linear(d_model, 1)
+        self.obj_classifier = nn.Linear(self.params.arch.d_model, 1)
 
         self.return_intermediate = True
         # if self.params.loss.contrastive_classifier:
         if True:
-            self.contrastive_classifier = ContrastiveClassifier(d_model)
+            self.contrastive_classifier = ContrastiveClassifier(
+                self.params.arch.d_model
+            )
 
         # if self.params.loss.false_classifier:
         #     self.false_classifier = MLP(
@@ -149,7 +152,7 @@ class BOMT(nn.Module):
         #     )
 
         self.two_stage = True
-        self.d_model = d_model
+        self.d_model = self.params.arch.d_model
 
         self._reset_parameters()
 
@@ -170,14 +173,14 @@ class BOMT(nn.Module):
 
         if self.two_stage:
             # hack implementation for two-stage
-            self.enc_output = nn.Linear(d_model, d_model)
-            self.enc_output_norm = nn.LayerNorm(d_model)
+            self.enc_output = nn.Linear(self.d_model, self.d_model)
+            self.enc_output_norm = nn.LayerNorm(self.d_model)
 
             # *2 as one is for object query and another for query position encoding
             self.pos_trans = nn.Linear(self.d_model, self.d_model * 2)
             self.pos_trans_norm = nn.LayerNorm(self.d_model * 2)
 
-            self.num_queries = num_queries
+            self.num_queries = self.params.arch.num_queries
         else:
             assert False, "self.two_stage should be = True for now"
             # self.reference_points_linear = nn.Linear(
@@ -245,19 +248,13 @@ class BOMT(nn.Module):
             enc_outputs_coord_unact: adjusted measurements using their corresponding predicted deltas.
         """
         n_measurements, _, c = embeddings.shape
-        measurements = measurement_batch.tensors[:, :, : self.d_detections]
-
-        # Compute xy position of the measurements using range and azimuth
-        xs = measurements[:, :, 0] * (measurements[:, :, 2].cos())
-        ys = measurements[:, :, 0] * (measurements[:, :, 2].sin())
-        xy_measurements = torch.stack([xs, ys], 2)
-
-        # Normalize measurements to 0.25 - 0.75 (to avoid extreme regions of the sigmoid)
-        normalized_xy_meas = xy_measurements / self.fov_rescaling_factor + 0.5
+        measurements = measurement_batch.tensors[
+            :, :, : self.prediction_space_dimensions
+        ]
 
         # Compute projected encoder memory + presigmoid normalized measurements (filtered using the masks)
         result = self.gen_encoder_output_proposals(
-            embeddings.permute(1, 0, 2), measurement_batch.mask, normalized_xy_meas
+            embeddings.permute(1, 0, 2), measurement_batch.mask, measurements
         )
         projected_embeddings, normalized_meas_presigmoid = result
 
@@ -326,13 +323,27 @@ class BOMT(nn.Module):
     def forward(
         self, measurements: NestedTensor
     ):  # NestedTensor consist of Tensor and mask
+
+        # Feed through feature extraction encoder
+        measurements_post_FE = self.rf_layer(measurements.tensors.permute(0, 2, 1))
+        print(f"1: {measurements_post_FE.shape}")
+        measurements_post_FE = self.feature_extraction_encoder(
+            measurements_post_FE
+        ).permute(0, 2, 1)
+        print(f"2: {measurements_post_FE.shape}")
+
+        # Time encoding
         mapped_time_idx = torch.round(
-            measurements.tensors[:, :, -1] / self.params.data_generation.dt
+            measurements_post_FE[:, :, -1] / self.params.data_generation.interval
         )
+
         time_encoding = self.temporal_encoder(mapped_time_idx.long())
+
+        # Preprocessing
         preprocessed_measurements = self.preprocessor(
-            measurements.tensors[:, :, : self.d_detections]
+            measurements_post_FE[:, :, : self.prediction_space_dimensions]
         )
+        print(f"3: {preprocessed_measurements.shape}")
         mask = measurements.mask
 
         batch_size, num_batch_max_meas, d_detections = preprocessed_measurements.shape

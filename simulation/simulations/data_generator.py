@@ -1,4 +1,4 @@
-import multiprocessing
+# import multiprocessing
 
 import numpy as np
 from numpy.random import SeedSequence, default_rng
@@ -26,29 +26,26 @@ def attach_time(data: np.ndarray, interval):
 class DataGenerator:
     def __init__(
         self,
-        simulation_generator="MOTSimulationV1",
-        batch=5,
-        truncation=150,
-        interval=0.1,
-        p=0.5,  # Probability of selecting the angle
+        params,
     ):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.pool = multiprocessing.Pool()
-        self.truncation = truncation
-        self.batch = batch
-        self.interval = interval
-        self.p = p
+        self.params = params
+        self.device = params.training.device
+        # self.pool = multiprocessing.Pool()
+        self.truncation = params.data_generation.truncation
+        self.batch = params.training.batch_size
+        self.interval = params.data_generation.interval
+        self.p = params.data_generation.p
 
         # Put this in Params in the future
-        np.random.seed(0)
+        np.random.seed(params.training.seed)
 
-        if simulation_generator == "MOTSimulationV1":
+        if params.data_generation.simulation_generator == "MOTSimulationV1":
             self.datagen = MOTSimulationV1(
-                dimension=np.array([[0, 100], [0, 100]]),
-                sensor_radius=np.array([[-5, 5], [-5, 5]]),
-                target_radius=np.array([[-5, 5], [-5, 5]]),
-                ThreeD=False,
-                interval=interval,
+                dimension=np.array(params.data_generation.dimension),
+                sensor_radius=np.array(params.data_generation.sensor_radius),
+                target_radius=np.array(params.data_generation.target_radius),
+                ThreeD=params.data_generation.ThreeD,
+                interval=self.interval,
             )
 
     def get_measurements(self, raw_data: tuple):
@@ -156,15 +153,20 @@ class DataGenerator:
 
                 final_unique_ids = np.hstack([final_unique_ids, unique_target_ids])
 
-        label = np.stack(
-            [split_targets_timestamps[:, -1, :], split_targets_velocities[:, -1, :]],
+        label = np.concatenate(
+            [
+                split_targets_timestamps[:, -1, :],
+                split_targets_velocities[:, -1, :],
+            ],
             axis=-1,
         )
 
         return final_measurement, label, final_unique_ids
 
     def get_batch(self):
-        raw_data = get_single_training_example(self.datagen, self.truncation)
+        raw_data = get_single_training_example(
+            self.params, self.datagen, self.truncation
+        )
 
         training_data, labels, unique_measurement_ids = self.get_measurements(raw_data)
         labels = [Tensor(l).to(torch.device(self.device)) for l in labels]
@@ -208,7 +210,7 @@ def pad_to_batch_max(training_data, max_len):
     return training_data_padded, mask
 
 
-def get_single_training_example(data_generator, truncation):
+def get_single_training_example(params, data_generator, truncation):
     """Generates a single training example
 
     Returns:
@@ -217,19 +219,37 @@ def get_single_training_example(data_generator, truncation):
     """
     data_generator.reset()
     data_generator.generate_checkpoints(
-        no_targets_checkpoints=np.random.poisson(8),
-        no_sensors_checkpoints=np.random.poisson(8),
+        no_targets_checkpoints=np.random.poisson(
+            params.data_generation.checkpoints.targets
+        ),
+        no_sensors_checkpoints=np.random.poisson(
+            params.data_generation.checkpoints.sensors
+        ),
     )
     data_generator.spawn_sensors(
-        distribution=lambda: max(np.random.poisson(3), 3),
-        error=lambda: np.random.poisson(5),
+        distribution=lambda: max(
+            np.random.poisson(params.data_generation.no_of_objects.sensors_lambda),
+            params.data_generation.no_of_objects.min_sensors,
+        ),
+        error=lambda: np.random.poisson(
+            params.data_generation.no_of_objects.sensor_error
+        ),
     )
     data_generator.spawn_targets(
-        distribution=lambda: max(np.random.poisson(3), 3),
+        distribution=lambda: max(
+            np.random.poisson(params.data_generation.no_of_objects.targets_lambda),
+            params.data_generation.no_of_objects.min_targets,
+        ),
     )
     data_generator.generate_paths(
-        sensor_speed_distribution=lambda: np.random.normal(20, 5),
-        target_speed_distribution=lambda: np.random.normal(20, 5),
+        sensor_speed_distribution=lambda: np.random.normal(
+            params.data_generation.speed.sensors[0],
+            params.data_generation.speed.sensors[1],
+        ),
+        target_speed_distribution=lambda: np.random.normal(
+            params.data_generation.speed.targets[0],
+            params.data_generation.speed.targets[1],
+        ),
     )
     data_generator.run()
 
