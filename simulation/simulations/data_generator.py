@@ -186,7 +186,7 @@ class DataGenerator:
         unique_measurement_ids = np.concatenate(unique_measurement_ids)
 
         training_nested_tensor = NestedTensor(
-            Tensor(training_data).to(torch.device(self.device)),
+            Tensor(training_data).to(torch.float32).to(torch.device(self.device)),
             Tensor(mask).bool().to(torch.device(self.device)),
         )
         unique_measurement_ids = Tensor(unique_measurement_ids).to(self.device)

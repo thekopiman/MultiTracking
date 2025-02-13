@@ -7,11 +7,11 @@ from typing import Optional
 
 
 class ContrastiveClassifier(nn.Module):
-    def __init__(self, measurement_dim):
+    def __init__(self, params):
         super().__init__()
-        self.measurement_dim = measurement_dim
-        self.device = 'cpu'
-        self.f = nn.Linear(measurement_dim, measurement_dim, bias=False)
+        self.measurement_dim = params.arch.d_model
+        self.device = params.training.device
+        self.f = nn.Linear(params.arch.d_model, params.arch.d_model, bias=False)
 
     def forward(self, x: Tensor, padding_mask: Optional[Tensor] = None) -> Tensor:
         """
@@ -38,7 +38,9 @@ class ContrastiveClassifier(nn.Module):
             temp = padding_mask.repeat(1, n_meas, 1)
             padding_mask = temp | temp.transpose(1, 2)
         else:
-            padding_mask = torch.zeros(batch_size, n_meas, n_meas, dtype=torch.bool, device=self.device)
+            padding_mask = torch.zeros(
+                batch_size, n_meas, n_meas, dtype=torch.bool, device=self.device
+            )
 
         # All elements which are masked are set to -inf, corresponding to zero probability in the predictions
         masked_dots = dot_products.masked_fill(mask | padding_mask, -100_000_000)

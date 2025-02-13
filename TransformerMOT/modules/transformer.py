@@ -3,7 +3,7 @@ from torch import nn, Tensor
 import torch.nn.functional as F
 from torch.nn.modules import ModuleList
 import numpy as np
-from util.misc import inverse_sigmoid
+from TransformerMOT.util.misc import inverse_sigmoid
 
 
 import copy
@@ -38,7 +38,9 @@ class PreProccessor(nn.Module):
             self.use_fourier_feat = use_fourier_feat
             self.linear1 = nn.Linear(d_model, d_model, bias=False)
         else:
-            self.linear1 = nn.Linear(d_detections, d_model, bias=False)
+            self.linear1 = nn.Linear(
+                d_detections, d_model, bias=False, dtype=torch.float32
+            )
 
     def forward(self, src):
         out = src / self.normalization_constant
@@ -51,8 +53,8 @@ class PreProccessor(nn.Module):
                 bs, num_batch_max_meas, d_out
             )
             final_embeds = [out.sin(), out.cos()]
-            out = torch.cat(final_embeds, dim=2)
-        return self.linear1(out)
+            out = torch.cat(final_embeds, dim=2).float()
+        return self.linear1(out.to(torch.float32))
 
 
 # ------------ TRANSFORMER ENCODER ------------ #

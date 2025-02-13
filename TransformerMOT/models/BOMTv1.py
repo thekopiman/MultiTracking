@@ -79,6 +79,7 @@ class BOMT(nn.Module):
             num_heads=self.params.arch.rp_encoder.n_heads,
             num_layers=self.params.arch.rp_encoder.n_layers,
             dim_feedforward=self.params.arch.rp_encoder.dim_feedforward,
+            d_detection=self.params.arch.d_detections,
         )
 
         self.preprocesser = PreProccessor(
@@ -139,9 +140,7 @@ class BOMT(nn.Module):
         self.return_intermediate = True
         # if self.params.loss.contrastive_classifier:
         if True:
-            self.contrastive_classifier = ContrastiveClassifier(
-                self.params.arch.d_model
-            )
+            self.contrastive_classifier = ContrastiveClassifier(params)
 
         # if self.params.loss.false_classifier:
         #     self.false_classifier = MLP(
@@ -325,25 +324,24 @@ class BOMT(nn.Module):
     ):  # NestedTensor consist of Tensor and mask
 
         # Feed through feature extraction encoder
-        measurements_post_FE = self.rf_layer(measurements.tensors.permute(0, 2, 1))
-        print(f"1: {measurements_post_FE.shape}")
+        measurements_post_FE = self.rf_layer(
+            measurements.tensors.permute(0, 2, 1)[:, : self.params.arch.d_detections, :]
+        )
         measurements_post_FE = self.feature_extraction_encoder(
             measurements_post_FE
         ).permute(0, 2, 1)
-        print(f"2: {measurements_post_FE.shape}")
 
         # Time encoding
         mapped_time_idx = torch.round(
-            measurements_post_FE[:, :, -1] / self.params.data_generation.interval
+            measurements.tensors[:, :, -1] / self.params.data_generation.interval
         )
 
         time_encoding = self.temporal_encoder(mapped_time_idx.long())
 
         # Preprocessing
-        preprocessed_measurements = self.preprocessor(
+        preprocessed_measurements = self.preprocesser(
             measurements_post_FE[:, :, : self.prediction_space_dimensions]
         )
-        print(f"3: {preprocessed_measurements.shape}")
         mask = measurements.mask
 
         batch_size, num_batch_max_meas, d_detections = preprocessed_measurements.shape
@@ -356,24 +354,85 @@ class BOMT(nn.Module):
         )
 
         aux_classifications = {}
-        # if self.params.loss.contrastive_classifier:
-        if True:
-            contrastive_classifications = self.contrastive_classifier(
-                embeddings.permute(1, 0, 2), padding_mask=mask
-            )
-            aux_classifications["contrastive_classifications"] = (
-                contrastive_classifications
-            )
+
+        # loss.contrastive_classifier
+        contrastive_classifications = self.contrastive_classifier(
+            embeddings.permute(1, 0, 2), padding_mask=mask
+        )
+        aux_classifications["contrastive_classifications"] = contrastive_classifications
 
         # False classifications omitted
 
-        # if self.two_stage:
-        if True:
-            (
-                object_queries,
-                query_positional_encodings,
-                topk_adjusted_normalized_meas,
-                scores,
-                adjustments,
-                adjusted_normalized_meas,
-            ) = self.get_two_stage_proposals(measurements, embeddings)
+        # 2 Stage / Selection Mechanism
+        (
+            object_queries,
+            query_positional_encodings,
+            topk_adjusted_normalized_meas,
+            scores,
+            adjustments,
+            adjusted_normalized_meas,
+        ) = self.get_two_stage_proposals(measurements, embeddings)
+
+        result = self.decoder(
+            object_queries,
+            embeddings,
+            encoder_embeddings_padding_mask=mask,
+            encoder_embeddings_positional_encoding=time_encoding,
+            object_queries_positional_encoding=query_positional_encodings,
+            reference_points=topk_adjusted_normalized_meas,
+        )
+
+        (
+            intermediate_state_predictions_normalized,
+            intermediate_uncertainties,
+            intermediate_logits,
+            debug_dict,
+        ) = result
+
+        prediction = Prediction(
+            positions=intermediate_state_predictions_normalized[-1][
+                :, :, : self.prediction_space_dimensions
+            ],
+            velocities=intermediate_state_predictions_normalized[-1][
+                :, :, self.prediction_space_dimensions :
+            ],
+            uncertainties=intermediate_uncertainties[-1],
+            logits=intermediate_logits[-1],
+        )
+        intermediate_predictions = (
+            [
+                Prediction(
+                    positions=p[:, :, : self.prediction_space_dimensions],
+                    velocities=p[:, :, self.prediction_space_dimensions :],
+                    uncertainties=u,
+                    logits=l,
+                )
+                for p, l, u in zip(
+                    intermediate_state_predictions_normalized[:-1],
+                    intermediate_logits[:-1],
+                    intermediate_uncertainties[:-1],
+                )
+            ]
+            if self.return_intermediate
+            else None
+        )
+        encoder_prediction = (
+            Prediction(
+                positions=adjusted_normalized_meas[
+                    :, :, : self.prediction_space_dimensions
+                ],
+                velocities=adjusted_normalized_meas[
+                    :, :, self.prediction_space_dimensions :
+                ],
+                logits=scores,
+            )
+            if self.two_stage
+            else None
+        )
+        return (
+            prediction,
+            intermediate_predictions,
+            encoder_prediction,
+            aux_classifications,
+            debug_dict,
+        )

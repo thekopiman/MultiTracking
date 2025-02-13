@@ -60,7 +60,7 @@ class RangeParameterizationLayer(nn.Module):
             transformed_polar = polar_cartesian * embed
 
             SensorCoordinates = SensorCoordinates.unsqueeze(-2).expand(
-                -1, -1, self.d_embeddings, -1
+                -1, -1, self.num_d, -1
             )
 
             output = SensorCoordinates + transformed_polar
@@ -73,9 +73,13 @@ class SelfAttentionFeatureExtractor(nn.Module):
 
     def __init__(self, d_input, d_model):
         super().__init__()
-        self.qkv_proj = nn.Linear(d_input, d_model * 3)  # Project to Q, K, V
+        self.qkv_proj = nn.Linear(
+            d_input, d_model * 3, dtype=torch.float32
+        )  # Project to Q, K, V
         self.softmax = nn.Softmax(dim=-1)
-        self.output_proj = nn.Linear(d_model, d_model)  # Final projection
+        self.output_proj = nn.Linear(
+            d_model, d_model, dtype=torch.float32
+        )  # Final projection
 
     def forward(self, x):
         # x: (B, 3, d, t)
@@ -116,18 +120,17 @@ class FeatureExtractorEncoder(nn.Module):
         # Self-Attention Feature Extraction
         self.feature_extractor = SelfAttentionFeatureExtractor(d_input, d_model)
 
+        cartesian_dim = d_detection // 2 + 1
         # Transformer Encoder
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
-                d_model=d_model * 3,
+                d_model=d_model * cartesian_dim,
                 nhead=num_heads,
                 dim_feedforward=dim_feedforward,
                 dropout=dropout,
             ),
             num_layers=num_layers,
         )
-
-        cartesian_dim = d_detection // 2 + 1
 
         # Project back to Cartesian coordinates (d_model → 3)
         self.output_projection = nn.Linear(d_model * cartesian_dim, cartesian_dim)

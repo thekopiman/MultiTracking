@@ -1,6 +1,6 @@
 data_generation:
   seed: 0
-  truncation: 20
+  truncation: 50
   simulation_generator: "MOTSimulationV1"
   interval: 0.1
   p: 0.5
