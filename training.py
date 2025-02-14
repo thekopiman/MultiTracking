@@ -98,19 +98,19 @@ if __name__ == "__main__":
         buffer_size=params.debug.log_interval,
     )
     print(f"Saving results to folder {logger.log_path}")
-    logger.save_code_dependencies(
-        project_root_path=os.path.realpath("../")
-    )  # assuming this is ran from repo root
-    logger.log_scalar("seed", params.general.pytorch_and_numpy_seed, 0, flush_now=True)
+    # logger.save_code_dependencies(
+    #     project_root_path=os.path.realpath("../")
+    # )  # assuming this is ran from repo root
+    # logger.log_scalar("seed", params.general.pytorch_and_numpy_seed, 0, flush_now=True)
 
-    # Manually copy the configuration yaml file used for this experiment to the logger folder
-    shutil.copy(
-        args.task_params, os.path.join(logger.log_path, "code_used", "task_params.yaml")
-    )
-    shutil.copy(
-        args.model_params,
-        os.path.join(logger.log_path, "code_used", "model_params.yaml"),
-    )
+    # # Manually copy the configuration yaml file used for this experiment to the logger folder
+    # shutil.copy(
+    #     args.task_params, os.path.join(logger.log_path, "code_used", "task_params.yaml")
+    # )
+    # shutil.copy(
+    #     args.model_params,
+    #     os.path.join(logger.log_path, "code_used", "model_params.yaml"),
+    # )
 
     # If continuing an experiment, manually copy the `code_used` of the experiment from which training wil continue
     if args.continue_training_from is not None:
@@ -182,7 +182,7 @@ if __name__ == "__main__":
 
     if params.debug.enable_plot or params.debug.save_plot_figs:
         fig = plt.figure(constrained_layout=True, figsize=(15, 8))
-        fig.canvas.set_window_title("Training Progress")
+        # fig.canvas.set_window_title("Training Progress")
 
         gs = GridSpec(2, 3, figure=fig)
         loss_ax = fig.add_subplot(gs[0, 0])
@@ -211,23 +211,27 @@ if __name__ == "__main__":
         if params.debug.save_plot_figs:
             os.makedirs(os.path.join(logger.log_path, "figs", "main"))
             total_loss_fig, total_loss_ax, total_loss_line = get_total_loss_ax()
-            os.makedirs(os.path.join(logger.log_path, "figs", "aux"))
+            os.makedirs(os.path.join(logger.log_path, "figs", "main_aux"))
 
         if params.loss.contrastive_classifier:
             contrastive_loss_fig, contrastive_loss_ax, contrastive_loss_line = (
                 get_constrastive_ax()
             )
-            os.makedirs(os.path.join(logger.log_path, "figs", "aux", "contrastive"))
+            os.makedirs(
+                os.path.join(logger.log_path, "figs", "main_aux", "contrastive")
+            )
 
         if params.loss.false_classifier:
             false_loss_fig, false_loss_ax, false_loss_line = get_false_ax()
-            os.makedirs(os.path.join(logger.log_path, "figs", "aux", "false"))
+            os.makedirs(os.path.join(logger.log_path, "figs", "main_aux", "false"))
 
         state_uncertainties_fig, state_uncertainties_ax, state_uncertainties_lines = (
             get_state_uncertainties_ax()
         )
         state_uncertainties_ax.legend()
-        os.makedirs(os.path.join(logger.log_path, "figs", "aux", "state_uncertainties"))
+        os.makedirs(
+            os.path.join(logger.log_path, "figs", "main_aux", "state_uncertainties")
+        )
 
     losses = []
     last_layer_losses = []
@@ -332,26 +336,6 @@ if __name__ == "__main__":
 
                 all_model_weights = [p for p in list(model.parameters())]
                 all_model_grads = [p.grad for p in list(model.parameters())]
-                # pickle.dump(all_model_weights, open(f'weights_iter{i_gradient_step}.p', 'wb'))
-                # pickle.dump(all_model_grads, open(f'grads_iter{i_gradient_step}.p', 'wb'))
-
-                # def compare_but_exclude_nones(list_a, list_b):
-                #    results = []
-                #    for a, b in zip(list_a, list_b):
-                #        if a is None or b is None:
-                #            if a is None and b is None:
-                #                results.append(True)
-                #            else:
-                #                results.append(False)
-                #        elif torch.allclose(a, b, atol=1e-04, rtol=1e-02):
-                #            results.append(True)
-                #        else:
-                #            results.append(False)
-                #    return results
-                # old_weights = pickle.load(open(f'weights_iter{i_gradient_step}.p', 'rb'))
-                # old_grads = pickle.load(open(f'grads_iter{i_gradient_step}.p', 'rb'))
-                # results_weights = compare_but_exclude_nones(all_model_weights, old_weights)
-                # results_grads = compare_but_exclude_nones(all_model_grads, old_grads)
 
                 if (
                     params.training.max_gradnorm is not None
@@ -450,7 +434,7 @@ if __name__ == "__main__":
             loss_ax.relim()
             loss_ax.autoscale_view()
 
-            percent_ax.collections.clear()
+            # percent_ax.collections.clear()
             matched_median_cert_line.set_data(
                 x_axis, np.array(matched_median_certainties)
             )
@@ -491,21 +475,21 @@ if __name__ == "__main__":
             )
             percent_ax.set_ylim([-0.05, 1.05])
 
-            output_ax.cla()
-            output_ax.grid("on")
-            output_truth_plot(output_ax, prediction, labels, indices, batch, params)
-            output_ax.set_xlim(
-                [
-                    -params.data_generation.field_of_view.max_range * 0.2,
-                    params.data_generation.field_of_view.max_range * 1.2,
-                ]
-            )
-            output_ax.set_ylim(
-                [
-                    -params.data_generation.field_of_view.max_range,
-                    params.data_generation.field_of_view.max_range,
-                ]
-            )
+            # output_ax.cla()
+            # output_ax.grid("on")
+            # output_truth_plot(output_ax, prediction, labels, indices, batch, params)
+            # output_ax.set_xlim(
+            #     [
+            #         -params.data_generation.field_of_view.max_range * 0.2,
+            #         params.data_generation.field_of_view.max_range * 1.2,
+            #     ]
+            # )
+            # output_ax.set_ylim(
+            #     [
+            #         -params.data_generation.field_of_view.max_range,
+            #         params.data_generation.field_of_view.max_range,
+            #     ]
+            # )
 
             if params.loss.contrastive_classifier:
                 contrastive_loss_line.set_data(x_axis, c_losses)
@@ -543,22 +527,28 @@ if __name__ == "__main__":
                 total_loss_ax.relim()
                 total_loss_ax.autoscale_view()
                 total_loss_fig.savefig(
-                    os.path.join(logger.log_path, "figs", "aux", filename)
+                    os.path.join(logger.log_path, "figs", "main_aux", filename)
                 )
 
                 if params.loss.contrastive_classifier:
                     contrastive_loss_fig.savefig(
                         os.path.join(
-                            logger.log_path, "figs", "aux", "contrastive", filename
+                            logger.log_path, "figs", "main_aux", "contrastive", filename
                         )
                     )
                 if params.loss.false_classifier:
                     false_loss_fig.savefig(
-                        os.path.join(logger.log_path, "figs", "aux", "false", filename)
+                        os.path.join(
+                            logger.log_path, "figs", "main_aux", "false", filename
+                        )
                     )
                 state_uncertainties_fig.savefig(
                     os.path.join(
-                        logger.log_path, "figs", "aux", "state_uncertainties", filename
+                        logger.log_path,
+                        "figs",
+                        "main_aux",
+                        "state_uncertainties",
+                        filename,
                     )
                 )
 
@@ -583,7 +573,7 @@ if __name__ == "__main__":
 
         # Save checkpoint
         if (i_gradient_step + 1) % params.training.checkpoint_interval == 0:
-            filename = f"checkpoint_gradient_step_{i_gradient_step}"
+            filename = f"checkpoint_gradient_step_{i_gradient_step}.pth"
             folder_name = os.path.join(logger.log_path, "checkpoints")
             save_checkpoint(
                 folder=folder_name,

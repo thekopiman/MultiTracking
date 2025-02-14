@@ -1,0 +1,1 @@
+python training.py -tp configs/tasks/task1.yaml -mp configs/models/BOMTv1.yaml --exp_name train1

@@ -3,7 +3,7 @@ data_generation:
   truncation: 100
   simulation_generator: "MOTSimulationV1"
   interval: 0.1
-  p: 0.1
+  p: 1
   dimension: [[0, 100], [0, 100]]
   sensor_radius: [[-5, 5], [-5, 5]]
   target_radius: [[-5, 5], [-5, 5]]

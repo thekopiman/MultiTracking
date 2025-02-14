@@ -32,7 +32,7 @@ class DataGenerator:
         self.device = params.training.device
         # self.pool = multiprocessing.Pool()
         self.truncation = params.data_generation.truncation
-        self.batch = params.training.batch_size
+        self.batch = int(params.training.batch_size)
         self.interval = params.data_generation.interval
         self.p = params.data_generation.p
 
