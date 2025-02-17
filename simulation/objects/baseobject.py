@@ -82,7 +82,7 @@ class BaseObject:
         try:
             self.timestamp_coordinates[-1, :] = self.location
         except IndexError:
-            self.timestamp_coordinates = self.location.unsqueeze(0)
+            self.timestamp_coordinates = np.expand_dims(self.location, axis=0)
 
     def return_timestamp_coordinates(self):
         # assert not isinstance(self.timestamp_coordinates, (None))
