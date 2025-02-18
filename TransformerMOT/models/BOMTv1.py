@@ -285,7 +285,12 @@ class BOMT(nn.Module):
         adjusted_normalized_meas = adjusted_normalized_meas_presigmoid.sigmoid()
 
         # Select top-k scoring measurements and their corresponding embeddings
-        topk_scores_indices = torch.topk(scores[..., 0], self.num_queries, dim=1)[1]
+
+        num_queries = min(
+            scores.shape[1], self.num_queries
+        )  # Account for cases when the input data is too small
+
+        topk_scores_indices = torch.topk(scores[..., 0], num_queries, dim=1)[1]
         repeated_indices = topk_scores_indices.unsqueeze(-1).repeat(
             (1, 1, adjusted_normalized_meas_presigmoid.shape[2])
         )

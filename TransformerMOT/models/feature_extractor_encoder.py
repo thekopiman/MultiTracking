@@ -81,7 +81,7 @@ class SelfAttentionFeatureExtractor(nn.Module):
             d_model, d_model, dtype=torch.float32
         )  # Final projection
 
-    def forward(self, x):
+    def forward(self, x, mask):
         # x: (B, 3, d, t)
         B, C, d, t = x.shape
         x = x.permute(0, 1, 3, 2)  # Reshape to (B, cartesian_dim, t, d) for attention
@@ -94,6 +94,11 @@ class SelfAttentionFeatureExtractor(nn.Module):
         attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (
             q.shape[-1] ** 0.5
         )  # (B, cartesian_dim, t, t)
+
+        # Apply Mask
+        if mask is not None:
+            attn_scores = attn_scores.masked_fill(mask == 0, float("-inf"))
+
         attn_weights = self.softmax(attn_scores)  # (B, cartesian_dim, t, t)
 
         # Apply attention
@@ -135,18 +140,20 @@ class FeatureExtractorEncoder(nn.Module):
         # Project back to Cartesian coordinates (d_model → 3)
         self.output_projection = nn.Linear(d_model * cartesian_dim, cartesian_dim)
 
-    def forward(self, x):
+    def forward(self, x, src_mask=None):
         # x: (B, cartesian_dim, d, t)
         B, C, d, t = x.shape
 
         # Feature Extraction (Self-Attention reduces d → d_model)
-        x = self.feature_extractor(x)  # (B, cartesian_dim, t, d_model)
+        x = self.feature_extractor(x, mask=src_mask)  # (B, cartesian_dim, t, d_model)
 
         # Reshape to merge Cartesian channels into feature space
         x = x.reshape(B, t, -1)  # (B, t, cartesian_dim * d_model)
 
         # Apply Transformer
-        x = self.transformer(x)  # (B, t, cartesian_dim * d_model)
+        x = self.transformer(
+            x, src_key_padding_mask=src_mask
+        )  # (B, t, cartesian_dim * d_model)
 
         # Project back to Cartesian (B, t, cartesian_dim)
         x = self.output_projection(x)  # (B, t, cartesian_dim)

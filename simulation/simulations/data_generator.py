@@ -88,11 +88,11 @@ class DataGenerator:
         unique_measuurement_ids = []
 
         for end in batch_arr:
-            split_sensors_timestamps = truncated_sensors_timestamps[:end]
-            split_targets_timestamps = truncated_targets_timestamps[:end]
+            split_sensors_timestamps = truncated_sensors_timestamps[:, :end, :]
+            split_targets_timestamps = truncated_targets_timestamps[:, :end, :]
             # split_sensors_velocities = truncated_sensors_velocities[:end] # This is redundant
-            split_targets_velocities = truncated_targets_velocities[:end]
-            split_angles_array = truncated_angles_array[:end]
+            split_targets_velocities = truncated_targets_velocities[:, :end, :]
+            split_angles_array = truncated_angles_array[:, :end, :]
 
             t1, l1, u_id = self._step(
                 split_sensors_timestamps,
@@ -164,11 +164,13 @@ class DataGenerator:
         return final_measurement, label, final_unique_ids
 
     def get_batch(self):
-        raw_data = get_single_training_example(
+        self.raw_data = get_single_training_example(
             self.params, self.datagen, self.truncation
         )
 
-        training_data, labels, unique_measurement_ids = self.get_measurements(raw_data)
+        training_data, labels, unique_measurement_ids = self.get_measurements(
+            self.raw_data
+        )
         labels = [Tensor(l).to(torch.device(self.device)) for l in labels]
         unique_measurement_ids = [list(u) for u in unique_measurement_ids]
 
