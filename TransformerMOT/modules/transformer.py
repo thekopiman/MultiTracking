@@ -57,7 +57,6 @@ class PreProccessor(nn.Module):
         return self.linear1(out.to(torch.float32))
 
 
-# ------------ TRANSFORMER ENCODER ------------ #
 class TransformerEncoderLayer(nn.Module):
 
     def __init__(
@@ -68,6 +67,7 @@ class TransformerEncoderLayer(nn.Module):
         dropout=0.1,
         activation="relu",
         normalize_before=False,
+        false_detect_embedding=None,
     ):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
@@ -84,6 +84,8 @@ class TransformerEncoderLayer(nn.Module):
         self.activation = _get_activation_fn(activation)
         self.normalize_before = normalize_before
 
+        self.false_detect_embedding = false_detect_embedding
+
     def with_pos_embed(self, tensor, pos: Optional[Tensor]):
         return tensor if pos is None else tensor + pos
 
@@ -95,8 +97,27 @@ class TransformerEncoderLayer(nn.Module):
         pos: Optional[Tensor] = None,
     ):
         q = k = self.with_pos_embed(src, pos)
+        if self.false_detect_embedding:
+            n, bs, dim = q.shape
+            nf, _ = self.false_detect_embedding.weight.shape
+            false_detect_embedding = (
+                self.false_detect_embedding.weight.unsqueeze(-1)
+                .permute(0, 2, 1)
+                .repeat(1, bs, 1)
+            )
+            k = torch.cat((k, false_detect_embedding), dim=0)
+            val = torch.cat((src, false_detect_embedding), dim=0)
+            false_detect_mask = (
+                torch.zeros(bs, nf).bool().to(src_key_padding_mask.device)
+            )
+            src_key_padding_mask = torch.cat(
+                (src_key_padding_mask, false_detect_mask), dim=1
+            )
+        else:
+            val = src
+
         src2 = self.self_attn(
-            q, k, value=src, attn_mask=src_mask, key_padding_mask=src_key_padding_mask
+            q, k, value=val, attn_mask=src_mask, key_padding_mask=src_key_padding_mask
         )[0]
         src = src + self.dropout1(src2)
         src = self.norm1(src)
@@ -112,10 +133,29 @@ class TransformerEncoderLayer(nn.Module):
         src_key_padding_mask: Optional[Tensor] = None,
         pos: Optional[Tensor] = None,
     ):
-        src2 = self.norm1(src)
+        src2 = self.norm1(src)  # The only difference. We just normalise first.
         q = k = self.with_pos_embed(src2, pos)
+        if self.false_detect_embedding:
+            n, bs, dim = q.shape
+            nf, _ = self.false_detect_embedding.weight.shape
+            false_detect_embedding = (
+                self.false_detect_embedding.weight.unsqueeze(-1)
+                .permute(0, 2, 1)
+                .repeat(1, bs, 1)
+            )
+            k = torch.cat((k, false_detect_embedding), dim=0)
+            val = torch.cat((src2, false_detect_embedding), dim=0)
+            false_detect_mask = (
+                torch.zeros(bs, nf).bool().to(src_key_padding_mask.device)
+            )
+            src_key_padding_mask = torch.cat(
+                (src_key_padding_mask, false_detect_mask), dim=1
+            )
+        else:
+            val = src
+
         src2 = self.self_attn(
-            q, k, value=src2, attn_mask=src_mask, key_padding_mask=src_key_padding_mask
+            q, k, value=val, attn_mask=src_mask, key_padding_mask=src_key_padding_mask
         )[0]
         src = src + self.dropout1(src2)
         src2 = self.norm2(src)
@@ -137,9 +177,14 @@ class TransformerEncoderLayer(nn.Module):
 
 class TransformerEncoder(nn.Module):
 
-    def __init__(self, encoder_layer, num_layers, norm=None):
+    def __init__(
+        self, encoder_layer, num_layers, norm=None, false_detect_embedding=None
+    ):
         super().__init__()
         self.layers = _get_clones(encoder_layer, num_layers)
+        if false_detect_embedding:
+            for layer in self.layers:
+                layer.false_detect_embedding = false_detect_embedding
         self.num_layers = num_layers
         self.norm = norm
 
@@ -166,10 +211,6 @@ class TransformerEncoder(nn.Module):
         return output
 
 
-# --------------------------------------------- #
-
-
-# ------------ TRANSFORMER DECODER ------------ #
 class TransformerDecoderLayer(nn.Module):
 
     def __init__(
@@ -308,10 +349,6 @@ class TransformerDecoder(nn.Module):
         self.num_layers = num_layers
         self.norm = norm
 
-        # To be added in BOMT
-        self.pos_vel_predictor = None
-        self.uncertainty_predictor = None
-
         # hack implementation for iterative bounding box refinement and two-stage Deformable DETR
         self.position_predictor = None
         self.obj_classifier = None
@@ -408,10 +445,6 @@ class TransformerDecoder(nn.Module):
         )
 
 
-# --------------------------------------------- #
-
-
-# -------------- HELPER FUNCTIONS ------------- #
 def _get_clones(module, N):
     return ModuleList([copy.deepcopy(module) for i in range(N)])
 
@@ -424,6 +457,3 @@ def _get_activation_fn(activation):
         return F.gelu
 
     raise RuntimeError("activation should be relu/gelu, not {}".format(activation))
-
-
-# --------------------------------------------- #

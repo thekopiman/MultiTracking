@@ -273,6 +273,7 @@ if __name__ == "__main__":
                 _,
             ) = model.forward(batch)
 
+            # print(f"Prediction.logits shape = {prediction.logits.shape}")
             loss_dict, indices = mot_loss.forward(
                 labels,
                 prediction,
@@ -360,12 +361,12 @@ if __name__ == "__main__":
             data_generator_eval.pool.close()
             exit()
 
-        except ValueError(e):
-            print(
-                "Error in obtainaing the correct compute matrix for hungarian algorithm"
-            )
-            print(e)
-            continue
+        # except ValueError as e:
+        #     print(
+        #         "Error in obtaining the correct compute matrix for hungarian algorithm"
+        #     )
+        #     print(e)
+        #     continue
 
         except RuntimeError as e:
             if "out of memory" in str(e):
@@ -540,7 +541,11 @@ if __name__ == "__main__":
                     if params.loss.contrastive_classifier:
                         contrastive_loss_fig.savefig(
                             os.path.join(
-                                logger.log_path, "figs", "main_aux", "contrastive", filename
+                                logger.log_path,
+                                "figs",
+                                "main_aux",
+                                "contrastive",
+                                filename,
                             )
                         )
                     if params.loss.false_classifier:
@@ -558,7 +563,7 @@ if __name__ == "__main__":
                             filename,
                         )
                     )
-        except Exception(e):
+        except Exception as e:
             print("Error in plotting")
             print(e)
             continue

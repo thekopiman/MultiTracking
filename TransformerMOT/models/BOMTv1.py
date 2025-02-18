@@ -89,6 +89,7 @@ class BOMT(nn.Module):
         )
 
         # False detection will not be present for Version 1
+        # encoder_norm = nn.LayerNorm(normalized_shape=self.params.arch.d_model)
         encoder_layer = TransformerEncoderLayer(
             d_model=self.params.arch.d_model,
             nhead=self.params.arch.encoder.n_heads,
@@ -205,6 +206,12 @@ class BOMT(nn.Module):
         output_proposals_valid = (
             (normalized_measurements > 0.01) & (normalized_measurements < 0.99)
         ).all(-1, keepdim=True)
+
+        # print(
+        #     f"normalized_measurements_presigmoid: {normalized_measurements_presigmoid.shape}"
+        # )
+        # print(f"memory_padding_mask: {memory_padding_mask.shape}")
+
         normalized_measurements_presigmoid = (
             normalized_measurements_presigmoid.masked_fill(
                 memory_padding_mask.unsqueeze(-1), float("inf")
@@ -229,7 +236,7 @@ class BOMT(nn.Module):
         projected_embeddings = self.enc_output_norm(self.enc_output(masked_embeddings))
         return projected_embeddings, normalized_measurements_presigmoid
 
-    def get_two_stage_proposals(self, measurement_batch, embeddings):
+    def get_two_stage_proposals(self, measurement_batch, mask, embeddings):
         """
         Given a batch of measurements and their corresponding embeddings (computed by the encoder), this generates the
         object queries to be fed by the decoder, using the selection mechanism as explained in https://arxiv.org/abs/2104.00734
@@ -247,13 +254,14 @@ class BOMT(nn.Module):
             enc_outputs_coord_unact: adjusted measurements using their corresponding predicted deltas.
         """
         n_measurements, _, c = embeddings.shape
-        measurements = measurement_batch.tensors[
-            :, :, : self.prediction_space_dimensions
-        ]
+        measurements = measurement_batch[:, :, : self.prediction_space_dimensions]
+
+        # print(f"measurements: ", {measurements.shape})
+        # print(f"embeddings: ", {embeddings.shape})
 
         # Compute projected encoder memory + presigmoid normalized measurements (filtered using the masks)
         result = self.gen_encoder_output_proposals(
-            embeddings.permute(1, 0, 2), measurement_batch.mask, measurements
+            embeddings.permute(1, 0, 2), mask, measurements
         )
         projected_embeddings, normalized_meas_presigmoid = result
 
@@ -262,7 +270,7 @@ class BOMT(nn.Module):
             projected_embeddings
         )
         scores = scores.masked_fill(
-            measurement_batch.mask.unsqueeze(-1), -100_000_000
+            mask.unsqueeze(-1), -100_000_000
         )  # Set masked predictions to "0" probability
 
         # delta
@@ -290,6 +298,9 @@ class BOMT(nn.Module):
             scores.shape[1], self.num_queries
         )  # Account for cases when the input data is too small
 
+        if num_queries != self.num_queries:
+            print("topk insufficient scores")
+
         topk_scores_indices = torch.topk(scores[..., 0], num_queries, dim=1)[1]
         repeated_indices = topk_scores_indices.unsqueeze(-1).repeat(
             (1, 1, adjusted_normalized_meas_presigmoid.shape[2])
@@ -298,7 +309,7 @@ class BOMT(nn.Module):
             adjusted_normalized_meas_presigmoid, 1, repeated_indices
         ).detach()
         topk_adjusted_normalized_meas = (
-            topk_adjusted_normalized_meas_presigmoid.sigmoid().permute(1, 0, 2)
+            topk_adjusted_normalized_meas_presigmoid.permute(1, 0, 2)
         )
         # i 1-k
         topk_memory = torch.gather(
@@ -358,6 +369,8 @@ class BOMT(nn.Module):
             preprocessed_measurements, src_key_padding_mask=mask, pos=time_encoding
         )
 
+        # Everything is ok up till here
+
         aux_classifications = {}
 
         # loss.contrastive_classifier
@@ -376,7 +389,9 @@ class BOMT(nn.Module):
             scores,
             adjustments,
             adjusted_normalized_meas,
-        ) = self.get_two_stage_proposals(measurements, embeddings)
+        ) = self.get_two_stage_proposals(
+            preprocessed_measurements.permute(1, 0, 2), mask, embeddings
+        )
 
         result = self.decoder(
             object_queries,
@@ -440,4 +455,5 @@ class BOMT(nn.Module):
             encoder_prediction,
             aux_classifications,
             debug_dict,
+            # adjusted_normalized_meas,
         )

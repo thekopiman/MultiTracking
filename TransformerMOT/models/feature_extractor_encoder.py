@@ -97,7 +97,7 @@ class SelfAttentionFeatureExtractor(nn.Module):
 
         # Apply Mask
         if mask is not None:
-            attn_scores = attn_scores.masked_fill(mask == 0, float("-inf"))
+            attn_scores = attn_scores.masked_fill(mask, float("-inf"))
 
         attn_weights = self.softmax(attn_scores)  # (B, cartesian_dim, t, t)
 
