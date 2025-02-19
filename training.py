@@ -162,7 +162,13 @@ if __name__ == "__main__":
 
     model.to(torch.device(params.training.device))
     optimizer = AdamW(
-        model.parameters(), lr=params.training.learning_rate, weight_decay=1e-4
+        list(
+            set(model.parameters())
+            - set(model.rf_layer.parameters())
+            - set(model.feature_extraction_encoder.parameters())
+        ),
+        lr=params.training.learning_rate,
+        weight_decay=1e-4,
     )
     scheduler = ReduceLROnPlateau(
         optimizer,
@@ -259,12 +265,49 @@ if __name__ == "__main__":
     start_time = time.time()
     time_since = time.time()
 
+    # Phase 1 Criterion and other stuff
+    criterion_phase1 = torch.nn.MSELoss()
+    optimizer_phase1 = AdamW(
+        params=list(model.rf_layer.parameters())
+        + list(model.feature_extraction_encoder.parameters()),
+        lr=params.training.learning_rate,
+        weight_decay=1e-4,
+    )
+
+    # Training of Feature Extractor Encoder
+    for i_gradient_step in range(params.training.n_gradient_steps_phase1):
+        batch, labels, unique_ids, target_labels = data_generator.get_batch()
+        phase1_predictions = model.forward_phase1(batch)
+
+        optimizer_phase1.zero_grad()
+        loss_phase1 = criterion_phase1(phase1_predictions, target_labels)
+        loss_phase1.backward()
+        optimizer_phase1.step()
+
+        if i_gradient_step % params.debug.print_interval == 0:
+            cur_time = time.time()
+            t = str(datetime.timedelta(seconds=round(cur_time - time_since)))
+            t_tot = str(datetime.timedelta(seconds=round(cur_time - start_time)))
+            print(
+                f"Number of gradient steps: {i_gradient_step + 1} \t "
+                f"Loss: {loss_phase1.item()} \t "
+                f"Time per step: {(cur_time-time_since)/params.debug.print_interval:.2f}s \t "
+                f"Total time elapsed: {t_tot}"
+            )
+            time_since = time.time()
+            print(phase1_predictions)
+
+    # Restart time for Phase 2
+    start_time = time.time()
+    time_since = time.time()
+
+    # General Training where Feature Extractor Encoder is frozen
     for i_gradient_step in range(params.training.n_gradient_steps):
         logs = {}
         # We assume n_split = 1
         try:
             # Only Batch, Labels, Unique_ids are used. The unique_ids are required for the constrastive loss
-            batch, labels, unique_ids = data_generator.get_batch()
+            batch, labels, unique_ids, _ = data_generator.get_batch()
             (
                 prediction,
                 intermediate_predictions,
@@ -429,6 +472,8 @@ if __name__ == "__main__":
                 f"Total time elapsed: {t_tot}"
             )
             time_since = time.time()
+
+            print(prediction.positions[0, :, :])
         try:
             if (
                 params.debug.enable_plot

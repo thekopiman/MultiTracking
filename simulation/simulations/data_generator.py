@@ -86,6 +86,7 @@ class DataGenerator:
         training_nested_tensor = []
         labels = []
         unique_measuurement_ids = []
+        targets_coordinates = []
 
         for end in batch_arr:
             split_sensors_timestamps = truncated_sensors_timestamps[:, :end, :]
@@ -94,7 +95,7 @@ class DataGenerator:
             split_targets_velocities = truncated_targets_velocities[:, :end, :]
             split_angles_array = truncated_angles_array[:, :end, :]
 
-            t1, l1, u_id = self._step(
+            t1, l1, u_id, target = self._step(
                 split_sensors_timestamps,
                 split_targets_timestamps,
                 split_targets_velocities,
@@ -104,8 +105,14 @@ class DataGenerator:
             training_nested_tensor.append(t1)
             labels.append(l1)
             unique_measuurement_ids.append(u_id)
+            targets_coordinates.append(target)
 
-        return training_nested_tensor, labels, unique_measuurement_ids
+        return (
+            training_nested_tensor,
+            labels,
+            unique_measuurement_ids,
+            targets_coordinates,
+        )
 
     def _step(
         self,
@@ -121,10 +128,12 @@ class DataGenerator:
         total_targets = split_targets_timestamps.shape[0]
 
         final_measurement = np.array([])
+        final_target_coordinates = np.array([])
         final_unique_ids = np.array([], dtype="int64")
 
         for time in range(total_duration):
             measurement_array = []
+            target_array = []
             unique_target_ids = []
             for s in range(total_sensors):
                 for t in range(total_targets):
@@ -134,13 +143,18 @@ class DataGenerator:
 
                     bearing_and_time = split_angles_array[s, t, time, :]
                     sensor_coordinate = split_sensors_timestamps[s, time, :]
-                    res = np.concatenate([sensor_coordinate, bearing_and_time])
-                    measurement_array.append(res)
+                    target_coordinate = split_targets_timestamps[t, time, :]
+                    sensor_measurements = np.concatenate(
+                        [sensor_coordinate, bearing_and_time]
+                    )
+                    measurement_array.append(sensor_measurements)
+                    target_array.append(target_coordinate)
                     unique_target_ids.append(t)
 
             random_idx = np.random.permutation(len(measurement_array))
             measurement_array = np.array(measurement_array)[random_idx]
             unique_target_ids = np.array(unique_target_ids)[random_idx]
+            target_array = np.array(target_array)[random_idx]
 
             # There might be situations where there are no bearing measurements in certain t
 
@@ -149,6 +163,12 @@ class DataGenerator:
                     np.vstack([final_measurement, measurement_array])
                     if final_measurement.size > 0
                     else measurement_array
+                )
+
+                final_target_coordinates = (
+                    np.vstack([final_target_coordinates, target_array])
+                    if final_target_coordinates.size > 0
+                    else target_array
                 )
 
                 final_unique_ids = np.hstack([final_unique_ids, unique_target_ids])
@@ -161,15 +181,15 @@ class DataGenerator:
             axis=-1,
         )
 
-        return final_measurement, label, final_unique_ids
+        return final_measurement, label, final_unique_ids, final_target_coordinates
 
     def get_batch(self):
         self.raw_data = get_single_training_example(
             self.params, self.datagen, self.truncation
         )
 
-        training_data, labels, unique_measurement_ids = self.get_measurements(
-            self.raw_data
+        training_data, labels, unique_measurement_ids, target_coordinates = (
+            self.get_measurements(self.raw_data)
         )
         labels = [Tensor(l).to(torch.device(self.device)) for l in labels]
         unique_measurement_ids = [list(u) for u in unique_measurement_ids]
@@ -177,6 +197,7 @@ class DataGenerator:
         # Pad training data
         max_len = max(list(map(len, training_data)))
         training_data, mask = pad_to_batch_max(training_data, max_len)
+        target_coordinates, _ = pad_to_batch_max(target_coordinates, max_len)
 
         # Pad unique ids
         for i in range(len(unique_measurement_ids)):
@@ -192,8 +213,14 @@ class DataGenerator:
             Tensor(mask).bool().to(torch.device(self.device)),
         )
         unique_measurement_ids = Tensor(unique_measurement_ids).to(self.device)
+        target_coordinates = Tensor(target_coordinates).to(self.device)
 
-        return training_nested_tensor, labels, unique_measurement_ids
+        return (
+            training_nested_tensor,
+            labels,
+            unique_measurement_ids,
+            target_coordinates,
+        )
 
     def _bool_select_bearing(self) -> bool:
         x = np.random.uniform(0, 1)

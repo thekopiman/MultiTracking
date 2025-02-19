@@ -198,29 +198,10 @@ class BOMT(nn.Module):
         self, embeddings, memory_padding_mask, normalized_measurements
     ):
         # Compute presigmoid version of normalized measurements
-        normalized_measurements_presigmoid = torch.log(
-            normalized_measurements / (1 - normalized_measurements)
-        )
 
-        # Set to inf invalid measurements (masked or outside the FOV)
-        output_proposals_valid = (
-            (normalized_measurements > 0.01) & (normalized_measurements < 0.99)
-        ).all(-1, keepdim=True)
-
-        # print(
-        #     f"normalized_measurements_presigmoid: {normalized_measurements_presigmoid.shape}"
-        # )
-        # print(f"memory_padding_mask: {memory_padding_mask.shape}")
-
-        normalized_measurements_presigmoid = (
-            normalized_measurements_presigmoid.masked_fill(
-                memory_padding_mask.unsqueeze(-1), float("inf")
-            )
-        )
-        normalized_measurements_presigmoid = (
-            normalized_measurements_presigmoid.masked_fill(
-                ~output_proposals_valid, float("inf")
-            )
+        sigmoid_measurements = normalized_measurements.sigmoid()
+        logits_measurements = torch.log(
+            sigmoid_measurements / (1 - sigmoid_measurements)
         )
 
         # Mask embeddings of measurements that are actually just padding
@@ -228,13 +209,10 @@ class BOMT(nn.Module):
         masked_embeddings = masked_embeddings.masked_fill(
             memory_padding_mask.unsqueeze(-1), float(0)
         )
-        masked_embeddings = masked_embeddings.masked_fill(
-            ~output_proposals_valid, float(0)
-        )
 
         # Project embeddings
         projected_embeddings = self.enc_output_norm(self.enc_output(masked_embeddings))
-        return projected_embeddings, normalized_measurements_presigmoid
+        return projected_embeddings, logits_measurements
 
     def get_two_stage_proposals(self, measurement_batch, mask, embeddings):
         """
@@ -263,7 +241,8 @@ class BOMT(nn.Module):
         result = self.gen_encoder_output_proposals(
             embeddings.permute(1, 0, 2), mask, measurements
         )
-        projected_embeddings, normalized_meas_presigmoid = result
+
+        projected_embeddings, logits_measurements = result
 
         # Compute scores and adjustments
         scores = self.decoder.obj_classifier[self.decoder.num_layers](
@@ -279,18 +258,18 @@ class BOMT(nn.Module):
         )
 
         # Concatenate initial velocity estimates to the measurements
-        init_vel_estimates_presigmoid = torch.zeros_like(normalized_meas_presigmoid)
-        normalized_meas_presigmoid = torch.cat(
+        init_vel_estimates_presigmoid = torch.zeros_like(logits_measurements)
+        logits_measurements = torch.cat(
             (
-                normalized_meas_presigmoid,
+                logits_measurements,
                 init_vel_estimates_presigmoid,
             ),
             dim=2,
         )
 
         # Adjust measurements
-        adjusted_normalized_meas_presigmoid = normalized_meas_presigmoid + adjustments
-        adjusted_normalized_meas = adjusted_normalized_meas_presigmoid.sigmoid()
+        adjusted_logits_measurements_presigmoid = logits_measurements + adjustments
+        adjusted_normalized_meas = adjusted_logits_measurements_presigmoid.sigmoid()
 
         # Select top-k scoring measurements and their corresponding embeddings
 
@@ -303,10 +282,10 @@ class BOMT(nn.Module):
 
         topk_scores_indices = torch.topk(scores[..., 0], num_queries, dim=1)[1]
         repeated_indices = topk_scores_indices.unsqueeze(-1).repeat(
-            (1, 1, adjusted_normalized_meas_presigmoid.shape[2])
+            (1, 1, adjusted_logits_measurements_presigmoid.shape[2])
         )
         topk_adjusted_normalized_meas_presigmoid = torch.gather(
-            adjusted_normalized_meas_presigmoid, 1, repeated_indices
+            adjusted_logits_measurements_presigmoid, 1, repeated_indices
         ).detach()
         topk_adjusted_normalized_meas = (
             topk_adjusted_normalized_meas_presigmoid.permute(1, 0, 2)
@@ -335,17 +314,34 @@ class BOMT(nn.Module):
             adjusted_normalized_meas,
         )
 
-    def forward(
-        self, measurements: NestedTensor
-    ):  # NestedTensor consist of Tensor and mask
-
-        # Feed through feature extraction encoder
+    def forward_phase1(self, measurements: NestedTensor):
         measurements_post_FE = self.rf_layer(
             measurements.tensors.permute(0, 2, 1)[:, : self.params.arch.d_detections, :]
         )
         measurements_post_FE = self.feature_extraction_encoder(
             measurements_post_FE
-        ).permute(0, 2, 1)
+        ).permute(
+            0, 2, 1
+        )  # (B, t, cartesian_dim)
+
+        return measurements_post_FE
+
+    def forward(
+        self, measurements: NestedTensor
+    ):  # NestedTensor consist of Tensor and mask
+
+        # Feed through feature extraction encoder
+        with torch.no_grad():
+            measurements_post_FE = self.rf_layer(
+                measurements.tensors.permute(0, 2, 1)[
+                    :, : self.params.arch.d_detections, :
+                ]
+            ).detach()
+            measurements_post_FE = (
+                self.feature_extraction_encoder(measurements_post_FE)
+                .detach()
+                .permute(0, 2, 1)
+            )  # (B, t, cartesian_dim)
 
         # Time encoding
         mapped_time_idx = torch.round(
@@ -381,6 +377,7 @@ class BOMT(nn.Module):
 
         # False classifications omitted
 
+        # The selective Mechanism is causing problems here!
         # 2 Stage / Selection Mechanism
         (
             object_queries,
@@ -389,9 +386,7 @@ class BOMT(nn.Module):
             scores,
             adjustments,
             adjusted_normalized_meas,
-        ) = self.get_two_stage_proposals(
-            preprocessed_measurements.permute(1, 0, 2), mask, embeddings
-        )
+        ) = self.get_two_stage_proposals(measurements_post_FE, mask, embeddings)
 
         result = self.decoder(
             object_queries,
@@ -455,5 +450,5 @@ class BOMT(nn.Module):
             encoder_prediction,
             aux_classifications,
             debug_dict,
-            # adjusted_normalized_meas,
+            # measurements_post_FE,
         )

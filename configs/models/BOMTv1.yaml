@@ -35,6 +35,7 @@ loss:
 
 training:
   n_gradient_steps: 5000
+  n_gradient_steps_phase1: 1000
   learning_rate: 0.00005
   batch_size: 5
   n_splits: 1
@@ -44,7 +45,7 @@ training:
   device: "cuda" # can be 'cpu', 'cuda', or 'auto' (use GPU if available)
 
 debug:
-  print_interval: 1
+  print_interval: 100
   enable_plot: False
   plot_interval: 1000
   save_plot_figs: True

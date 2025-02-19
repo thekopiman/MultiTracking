@@ -407,9 +407,9 @@ class TransformerDecoder(nn.Module):
 
             # Compute deltas using the embeddings, sum them in pre-sigmoid space
             deltas = self.pos_vel_predictor[layer_idx](self.norm(object_queries))
-            normalized_predicted_state_at_current_layer = (
-                deltas + inverse_sigmoid(reference_points)
-            ).sigmoid()
+            normalized_predicted_state_at_current_layer = deltas + inverse_sigmoid(
+                reference_points
+            )
 
             # Compute uncertainty using the embeddings
             uncertainties = self.uncertainty_predictor[layer_idx](
