@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 
+@DeprecationWarning
 class RangeParameterizationLayer(nn.Module):
     def __init__(self, num_d=10):
         super().__init__()
@@ -109,6 +110,7 @@ class SelfAttentionFeatureExtractor(nn.Module):
         return output
 
 
+@DeprecationWarning
 class FeatureExtractorEncoder(nn.Module):
     def __init__(
         self,
