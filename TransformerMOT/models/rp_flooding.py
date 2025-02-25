@@ -6,12 +6,15 @@ def find_closest_index(tensor_sequence, x):
     return torch.argmin(torch.abs(tensor_sequence - x)).item()
 
 
-class RPFlooding(nn.Module):
+class RPFlooding:
     def __init__(self, params):
         self.d_radius = params.arch.rp_flooding.d_radius
-        self.start = params.params.data_generation.dimension[0][0]
+        self.start = params.data_generation.dimension[0][0]
         self.end = params.data_generation.dimension[0][1]
-        self.d_range = torch.linspace(self.start, self.end, self.d_radius)
+        self.device = params.training.device
+        self.d_range = torch.linspace(self.start, self.end, self.d_radius).to(
+            self.device
+        )
 
     def forward(
         self,
@@ -39,11 +42,11 @@ class RPFlooding(nn.Module):
             B, t, -1
         )  # (B, t, d)
 
-        # Apply mask - mask = True will cause d = 0
+        # Apply mask | mask = True will cause d = 0
         self.d_range_expanded = torch.where(
             mask.unsqueeze(-1),
-            torch.zeros_like(self.d_range_expanded),
-            self.d_range_expanded,
+            torch.zeros_like(self.d_range_expanded).to(mask.device),
+            self.d_range_expanded.to(mask.device),
         )
 
         self.d_range_expanded = self.d_range_expanded.reshape(B, -1, 1)  # (B, t * d, 1)
@@ -61,8 +64,8 @@ class RPFlooding(nn.Module):
         optim_indices = None
 
         if target_coordinates is not None and unique_id is not None:
-            optim_indices = (
-                torch.zeros((B, t * self.d_radius, 1)) - 1
+            optim_indices = (torch.zeros((B, t * self.d_radius, 1)) - 1).to(
+                self.device
             )  # All clutter/noise first with shape (B, t * d, 1)
 
             distance = torch.abs(
@@ -80,14 +83,12 @@ class RPFlooding(nn.Module):
             )  # (B, t * d, 1)
 
             # Generate a mask to set the correct indices in optim_indices
-            idx_mask = torch.arange(self.d_radius, device=closest_indices.device).view(
-                1, 1, -1
-            )  # (1, 1, d)
+            idx_mask = torch.arange(self.d_radius).view(1, 1, -1)  # (1, 1, d)
             idx_mask = idx_mask.expand(B, t, -1)  # (B, t, d)
 
             # Create a mask where the closest index matches the d_range index
-            selection_mask = (
-                idx_mask == closest_indices
+            selection_mask = (idx_mask == closest_indices).to(
+                self.device
             )  # (B, t, d), True where index matches
 
             # Reshape mask to match (B, t*d, 1)
@@ -95,5 +96,6 @@ class RPFlooding(nn.Module):
 
             # Assign unique_id where selection_mask is True
             optim_indices[selection_mask] = unique_id_expanded[selection_mask]
+            optim_indices = optim_indices.squeeze(dim=-1)
 
         return src_new, optim_indices

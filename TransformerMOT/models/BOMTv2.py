@@ -14,6 +14,7 @@ from TransformerMOT.util.misc import NestedTensor, Prediction
 import copy
 import math
 import numpy as np
+from TransformerMOT.models.rp_flooding import RPFlooding
 
 
 def _get_clones(module, N):
@@ -62,10 +63,13 @@ class BOMT(nn.Module):
                 params.data_generation.dimension[0][1]
                 - params.data_generation.dimension[0][0],
                 1,
+                1,
             ]
-        )  #
+        ).to(self.params.training.device)
+        # position, velocity, angle, d
+        # Make sure not to normalise d as it will be normalized together with position
 
-        self.fov_rescaling_factor = self.measurement_normalization_factor * 4
+        self.fov_rescaling_factor = self.measurement_normalization_factor[0] * 4
         self.starting_dimension = torch.tensor(params.data_generation.dimension[0][0])
 
         self.false_detect_embedding = (
@@ -73,10 +77,11 @@ class BOMT(nn.Module):
             if params.arch.false_detect_embedding
             else None
         )
+        self.rp_flooding = RPFlooding(params)
 
         self.preprocesser = PreProccessor(
             d_model=self.params.arch.d_model,
-            d_detections=self.prediction_space_dimensions,
+            d_detections=self.params.arch.d_detections + 1,  # Include d
             normalization_constant=self.measurement_normalization_factor,
         )
 
@@ -225,17 +230,28 @@ class BOMT(nn.Module):
             enc_outputs_coord_unact: adjusted measurements using their corresponding predicted deltas.
         """
         n_measurements, _, c = embeddings.shape
-        measurements = measurement_batch[:, :, : self.prediction_space_dimensions]
+        measurements = measurement_batch[:, :, : self.params.arch.d_detections + 1]
+        # (sensor xy, azimuth, d, t)
 
-        # print(f"measurements: ", {measurements.shape})
-        # print(f"embeddings: ", {embeddings.shape})
+        # Compute xy position of the measurements using range and azimuth
+        xs = (
+            measurements[:, :, 3] * (measurements[:, :, 2].cos())
+            + measurements[:, :, 0]
+        )
+        ys = (
+            measurements[:, :, 3] * (measurements[:, :, 2].sin())
+            + measurements[:, :, 1]
+        )
+
+        xy_measurements = torch.stack([xs, ys], 2)
+
+        normalized_xy_meas = xy_measurements / self.fov_rescaling_factor + 0.5
 
         # Compute projected encoder memory + presigmoid normalized measurements (filtered using the masks)
         result = self.gen_encoder_output_proposals(
-            embeddings.permute(1, 0, 2), mask, measurements
+            embeddings.permute(1, 0, 2), mask, normalized_xy_meas
         )
-
-        projected_embeddings, logits_measurements = result
+        projected_embeddings, normalized_meas_presigmoid = result
 
         # Compute scores and adjustments
         scores = self.decoder.obj_classifier[self.decoder.num_layers](
@@ -244,46 +260,35 @@ class BOMT(nn.Module):
         scores = scores.masked_fill(
             mask.unsqueeze(-1), -100_000_000
         )  # Set masked predictions to "0" probability
-
-        # delta
         adjustments = self.pos_vel_predictor[self.decoder.num_layers](
             projected_embeddings
         )
 
         # Concatenate initial velocity estimates to the measurements
-        init_vel_estimates_presigmoid = torch.zeros_like(logits_measurements)
-        logits_measurements = torch.cat(
+        init_vel_estimates_presigmoid = torch.zeros_like(normalized_meas_presigmoid)
+        normalized_meas_presigmoid = torch.cat(
             (
-                logits_measurements,
+                normalized_meas_presigmoid,
                 init_vel_estimates_presigmoid,
             ),
             dim=2,
         )
 
         # Adjust measurements
-        adjusted_logits_measurements_presigmoid = logits_measurements + adjustments
-        adjusted_normalized_meas = adjusted_logits_measurements_presigmoid.sigmoid()
+        adjusted_normalized_meas_presigmoid = normalized_meas_presigmoid + adjustments
+        adjusted_normalized_meas = adjusted_normalized_meas_presigmoid.sigmoid()
 
         # Select top-k scoring measurements and their corresponding embeddings
-
-        num_queries = min(
-            scores.shape[1], self.num_queries
-        )  # Account for cases when the input data is too small
-
-        if num_queries != self.num_queries:
-            print("topk insufficient scores")
-
-        topk_scores_indices = torch.topk(scores[..., 0], num_queries, dim=1)[1]
+        topk_scores_indices = torch.topk(scores[..., 0], self.num_queries, dim=1)[1]
         repeated_indices = topk_scores_indices.unsqueeze(-1).repeat(
-            (1, 1, adjusted_logits_measurements_presigmoid.shape[2])
+            (1, 1, adjusted_normalized_meas_presigmoid.shape[2])
         )
         topk_adjusted_normalized_meas_presigmoid = torch.gather(
-            adjusted_logits_measurements_presigmoid, 1, repeated_indices
+            adjusted_normalized_meas_presigmoid, 1, repeated_indices
         ).detach()
         topk_adjusted_normalized_meas = (
-            topk_adjusted_normalized_meas_presigmoid.permute(1, 0, 2)
+            topk_adjusted_normalized_meas_presigmoid.sigmoid().permute(1, 0, 2)
         )
-        # i 1-k
         topk_memory = torch.gather(
             projected_embeddings.detach(),
             1,
@@ -307,38 +312,40 @@ class BOMT(nn.Module):
             adjusted_normalized_meas,
         )
 
-    def forward_phase1(self, measurements: NestedTensor):
-        measurements_post_FE = self.rf_layer(
-            measurements.tensors.permute(0, 2, 1)[:, : self.params.arch.d_detections, :]
-        )
-        measurements_post_FE = self.feature_extraction_encoder(
-            measurements_post_FE
-        ).permute(
-            0, 2, 1
-        )  # (B, t, cartesian_dim)
-
-        return measurements_post_FE
-
     def forward(
-        self, measurements: NestedTensor
+        self,
+        measurements: NestedTensor,
+        target_coordinates=None,
+        unique_id=None,
     ):  # NestedTensor consist of Tensor and mask
+
+        # RP Flooding
+        rp_measurements, optim_indices = self.rp_flooding.forward(
+            src=measurements.tensors,
+            mask=measurements.mask,
+            unique_id=unique_id,
+            target_coordinates=target_coordinates,
+        )  # (B, t * d, feature_dim + 1)
+        rp_measurements.to(self.params.training.device)
 
         # Time encoding
         mapped_time_idx = torch.round(
-            measurements.tensors[:, :, -1] / self.params.data_generation.interval
+            rp_measurements[:, :, -1] / self.params.data_generation.interval
         )
 
         time_encoding = self.temporal_encoder(mapped_time_idx.long())
 
+        if optim_indices is not None:
+            optim_indices.to(self.params.training.device)
 
-        # RP Flooding should be here!
-        rp_measurements = 
+        mask = measurements.mask = measurements.mask.repeat_interleave(
+            repeats=self.rp_flooding.d_radius, dim=-1
+        )
 
         # Preprocessing
         preprocessed_measurements = self.preprocesser(
-            measurements[:, :, : self.prediction_space_dimensions]
+            rp_measurements[:, :, : self.params.arch.d_detections + 1]  # Include d now
         )
-        mask = measurements.mask
 
         batch_size, num_batch_max_meas, d_detections = preprocessed_measurements.shape
         preprocessed_measurements = preprocessed_measurements.permute(1, 0, 2)
@@ -359,9 +366,11 @@ class BOMT(nn.Module):
         )
         aux_classifications["contrastive_classifications"] = contrastive_classifications
 
-        # False classifications omitted
+        # False classifications
+        if self.params.loss.false_classifier:
+            false_classifications = self.false_classifier(embeddings)
+            aux_classifications["false_classifications"] = false_classifications
 
-        # The selective Mechanism is causing problems here!
         # 2 Stage / Selection Mechanism
         (
             object_queries,
@@ -370,7 +379,7 @@ class BOMT(nn.Module):
             scores,
             adjustments,
             adjusted_normalized_meas,
-        ) = self.get_two_stage_proposals(measurements_post_FE, mask, embeddings)
+        ) = self.get_two_stage_proposals(rp_measurements, mask, embeddings)
 
         result = self.decoder(
             object_queries,
@@ -388,11 +397,15 @@ class BOMT(nn.Module):
             debug_dict,
         ) = result
 
+        # Un-normalize state predictions
+        intermediate_state_predictions = intermediate_state_predictions_normalized - 0.5
+        intermediate_state_predictions *= self.fov_rescaling_factor
+
         prediction = Prediction(
-            positions=intermediate_state_predictions_normalized[-1][
+            positions=intermediate_state_predictions[-1][
                 :, :, : self.prediction_space_dimensions
             ],
-            velocities=intermediate_state_predictions_normalized[-1][
+            velocities=intermediate_state_predictions[-1][
                 :, :, self.prediction_space_dimensions :
             ],
             uncertainties=intermediate_uncertainties[-1],
@@ -434,5 +447,5 @@ class BOMT(nn.Module):
             encoder_prediction,
             aux_classifications,
             debug_dict,
-            # measurements_post_FE,
+            optim_indices,
         )

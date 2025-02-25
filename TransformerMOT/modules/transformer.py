@@ -44,6 +44,7 @@ class PreProccessor(nn.Module):
 
     def forward(self, src):
         out = src / self.normalization_constant
+
         if self.use_fourier_feat:
             bs, num_batch_max_meas, d_detections = src.shape
             d_in = self.gauss_B.shape[0]

@@ -15,7 +15,7 @@ def evaluate_gospa(data_generator, model, eval_params):
         for i in range(eval_params.n_samples):
             # Get batch from data generator and feed it to trained model
             batch, labels, unique_ids, _ = data_generator.get_batch()
-            prediction, _, _, _, _ = model.forward(batch)
+            prediction, _, _, _, _, _ = model.forward(batch)
 
             # Compute GOSPA score
             prediction_in_format_for_loss = {

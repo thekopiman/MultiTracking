@@ -17,7 +17,7 @@ arch:
     dim_feedforward: 2048
     dropout: 0.1
   rp_flooding:
-    d_radius: 50
+    d_radius: 4
   d_prediction_hidden: 128
   n_prediction_layers: 3
   with_state_refine: True
@@ -34,7 +34,7 @@ training:
   n_gradient_steps: 5000
   n_gradient_steps_phase1: 1000
   learning_rate: 0.00005
-  batch_size: 5
+  batch_size: 2
   n_splits: 1
   reduce_lr_patience: 2500
   reduce_lr_factor: 0.25
