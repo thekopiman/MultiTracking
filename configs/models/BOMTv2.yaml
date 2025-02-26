@@ -3,7 +3,7 @@ general:
 
 arch:
   type: "ddetr_v2"
-  num_queries: 16
+  num_queries: 6
   d_model: 256
   d_detections: 3
   encoder:
@@ -17,7 +17,7 @@ arch:
     dim_feedforward: 2048
     dropout: 0.1
   rp_flooding:
-    d_radius: 4
+    d_radius: 8
   d_prediction_hidden: 128
   n_prediction_layers: 3
   with_state_refine: True
