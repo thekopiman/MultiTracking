@@ -3,7 +3,7 @@ import torch.nn as nn
 
 
 def find_closest_index(tensor_sequence, x):
-    return torch.argmin(torch.abs(tensor_sequence - x)).item()
+    return torch.argmin(torch.abs(tensor_sequence - x), dim=-1)
 
 
 class RPFlooding:
@@ -57,8 +57,7 @@ class RPFlooding:
         )  # (B, t * d, _ + 1)
 
         # Swap timestamp and d
-        src_new[:, :, -1], src_new[:, :, -2] = src_new[:, :, -2], src_new[:, :, -1]
-
+        src_new[:, :, [-1, -2]] = src_new[:, :, [-2, -1]]
         sensor_xy = src[:, :, :2]  # Have to change to 2/3 cartesian format next time
 
         optim_indices = None
@@ -72,7 +71,12 @@ class RPFlooding:
                 torch.linalg.norm(target_coordinates - sensor_xy, dim=-1, keepdim=True)
             )  # (B, t, 1)
 
-            closest_indices = find_closest_index(self.d_range, distance)  # (B, t, 1)
+            closest_indices = find_closest_index(self.d_range, distance)  # (B, t)
+            closest_indices = (
+                closest_indices.unsqueeze(-1)
+                .repeat_interleave(self.d_radius, dim=-1)
+                .to(self.device)
+            )  # Convert to (B, t, d)
 
             # Expand unique_id to shape (B, t, 1) if needed
             unique_id = unique_id.view(B, t, 1)
@@ -84,7 +88,7 @@ class RPFlooding:
 
             # Generate a mask to set the correct indices in optim_indices
             idx_mask = torch.arange(self.d_radius).view(1, 1, -1)  # (1, 1, d)
-            idx_mask = idx_mask.expand(B, t, -1)  # (B, t, d)
+            idx_mask = idx_mask.expand(B, t, -1).to(self.device)  # (B, t, d)
 
             # Create a mask where the closest index matches the d_range index
             selection_mask = (idx_mask == closest_indices).to(
